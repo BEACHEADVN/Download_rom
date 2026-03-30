@@ -1,0 +1,35 @@
+name: Download Xiaomi.eu ROM (Fast)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install aria2
+        run: sudo apt-get update && sudo apt-get install -y aria2
+
+      - name: Download ROM (aria2 multi-thread)
+        run: |
+          URL="https://downloads.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
+          OUTPUT="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
+
+          aria2c \
+            -x 16 \               # max connection/server
+            -s 16 \               # split file
+            -k 1M \               # segment size
+            --retry-wait=5 \
+            --max-tries=10 \
+            --timeout=60 \
+            --continue=true \
+            --summary-interval=5 \
+            -o "$OUTPUT" \
+            "$URL"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaomi-eu-rom
+          path: xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip
