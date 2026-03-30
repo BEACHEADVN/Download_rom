@@ -32,6 +32,7 @@ jobs:
       - name: Upload to Pixeldrain
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
+          echo "API KEY LENGTH: ${#PD_API_KEY}"
 
           RESPONSE=$(curl -s -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
 
