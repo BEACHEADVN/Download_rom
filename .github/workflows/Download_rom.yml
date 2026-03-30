@@ -11,11 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ===== INSTALL =====
       - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y aria2 curl
 
+      # ===== DOWNLOAD =====
       - name: Download ROM
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
@@ -23,16 +25,31 @@ jobs:
 
           aria2c -x 16 -s 16 -k 1M --continue=true -o "$FILE" "$URL"
 
+      # ===== VERIFY =====
       - name: Verify file
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
           ls -lh "$FILE"
           file "$FILE"
 
+      # ===== CHECK SECRET =====
+      - name: Check Pixeldrain API key
+        env:
+          PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+        run: |
+          if [ -z "$PD_API_KEY" ]; then
+            echo "❌ PIXELDRAIN_API_KEY missing"
+            exit 1
+          else
+            echo "✅ API key loaded"
+          fi
+
+      # ===== UPLOAD PIXELDRAIN =====
       - name: Upload to Pixeldrain
+        env:
+          PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
-          echo "API KEY LENGTH: ${#PD_API_KEY}"
 
           RESPONSE=$(curl -s -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
 
@@ -40,18 +57,25 @@ jobs:
 
           ID=$(echo "$RESPONSE" | grep -o '"id":"[^"]*"' | cut -d '"' -f4)
 
+          if [ -z "$ID" ]; then
+            echo "❌ Upload failed"
+            exit 1
+          fi
+
           LINK="https://pixeldrain.com/u/${ID}"
 
           echo "Pixeldrain link:"
           echo "$LINK"
 
-          echo "## 📦 Download Link" >> $GITHUB_STEP_SUMMARY
-          echo "$LINK" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Download Link" >> "$GITHUB_STEP_SUMMARY"
+          echo "$LINK" >> "$GITHUB_STEP_SUMMARY"
 
+      # ===== SPLIT FILE =====
       - name: Split file (artifact)
         run: |
           split -b 1900M xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip part_
 
+      # ===== UPLOAD ARTIFACT =====
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
