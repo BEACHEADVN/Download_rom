@@ -1,21 +1,20 @@
-name: Download Xiaomi.eu ROM (Stable Mirror)
+name: Download & Upload Xiaomi.eu ROM
 
 on:
   workflow_dispatch:
 
 jobs:
-  download:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install aria2
+      - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y aria2
 
-      - name: Download ROM (direct mirror)
+      # ===== DOWNLOAD =====
+      - name: Download ROM (mirror ổn định)
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
-
-          # Mirror thật (ổn định)
           URL="https://netix.dl.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
 
           aria2c \
@@ -24,12 +23,35 @@ jobs:
             -k 1M \
             --continue=true \
             --max-tries=10 \
-            --retry-wait=5 \
             -o "$FILE" \
             "$URL"
 
+      # ===== VERIFY =====
       - name: Verify file
         run: |
           FILE="xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip"
           ls -lh "$FILE"
           file "$FILE"
+
+      # ===== SPLIT (CHO ARTIFACT) =====
+      - name: Split file (for artifact)
+        run: |
+          split -b 1900M xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip part_
+
+      # ===== UPLOAD ARTIFACT =====
+      - name: Upload artifact (parts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaomi-eu-rom-parts
+          path: part_*
+          retention-days: 7
+
+      # ===== UPLOAD RELEASE (FILE FULL) =====
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: rom-${{ github.run_number }}
+          name: Xiaomi.eu ROM Build ${{ github.run_number }}
+          files: xiaomi.eu_SOCRATES_OS3.0.5.0.VMKCNXM_15.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
