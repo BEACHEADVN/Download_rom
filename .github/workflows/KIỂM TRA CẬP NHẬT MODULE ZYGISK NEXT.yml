@@ -16,22 +16,31 @@ jobs:
       - name: Pull latest
         run: git pull origin main || true
 
-      - name: Get Release
+      - name: Get Release Info (Safe Mode)
         id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
         run: |
-          JSON=$(curl -s https://api.github.com/repos/Dr-TSNG/ZygiskNext/releases/latest)
-          TAG=$(echo "$JSON" | jq -r '.tag_name')
-          ASSET=$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith(".zip"))' | head -n 1)
-          FILE_NAME=$(echo "$ASSET" | jq -r '.name')
-          DL_URL=$(echo "$ASSET" | jq -r '.browser_download_url')
-          SIZE=$(echo "$ASSET" | jq -r '.size')
-          DATE=$(echo "$JSON" | jq -r '.published_at')
-
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
-          echo "dl_url=$DL_URL" >> $GITHUB_OUTPUT
-          echo "size=$SIZE" >> $GITHUB_OUTPUT
-          echo "date=$DATE" >> $GITHUB_OUTPUT
+            import os, requests, json
+            repo = "Dr-TSNG/ZygiskNext"
+            headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
+            try:
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+                data = response.json()
+                tag = data.get('tag_name', '')
+                date = data.get('published_at', data.get('created_at', ''))
+                assets = data.get('assets', [])
+                zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
+                
+                file_name = zip_asset['name'] if zip_asset else f"ZygiskNext-{tag}.zip"
+                dl_url = zip_asset['browser_download_url'] if zip_asset else f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
+                size = zip_asset['size'] if zip_asset else 0
+                
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    f.write(f"tag={tag}\nfile_name={file_name}\ndl_url={dl_url}\nsize={size}\ndate={date}\n")
+            except Exception as e:
+                print(f"Error: {e}"); exit(1)
 
       - name: Check State
         id: check
@@ -52,24 +61,26 @@ jobs:
         run: |
           import os, requests, datetime
           def get_size(b):
+              b = int(b); 
               for unit in ['B','KB','MB']:
                   if b < 1024: return f"{b:.2f} {unit}"
                   b /= 1024
+              return f"{b:.2f} GB"
+          
           tag, file_name = "${{ steps.info.outputs.tag }}", "${{ steps.info.outputs.file_name }}"
-          size = get_size(int("${{ steps.info.outputs.size }}"))
-          date_obj = datetime.datetime.strptime("${{ steps.info.outputs.date }}", "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
-          
-          caption = (f"<b>🚀 ZygiskNext Update!</b>\n\n"
-                     f"📦 Phiên bản: <code>{tag}</code>\n"
-                     f"📊 Dung lượng: <code>{size}</code>\n"
-                     f"📅 Cập nhật: <code>{date_obj.strftime('%d/%m/%Y %H:%M')}</code>")
-          
+          size = get_size("${{ steps.info.outputs.size }}")
+          try:
+              date_obj = datetime.datetime.strptime("${{ steps.info.outputs.date }}", "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+              date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+          except: date_str = "N/A"
+
+          caption = f"<b>🚀 ZygiskNext Update!</b>\n\n📦 Phiên bản: <code>{tag}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
           with open(file_name, 'rb') as f:
               requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
                             data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
                             files={'document': (file_name, f)})
 
-      - name: Save
+      - name: Save State
         if: steps.check.outputs.skip != 'true'
         run: |
           echo "${{ steps.info.outputs.tag }}" > zygisk_next_state.txt
