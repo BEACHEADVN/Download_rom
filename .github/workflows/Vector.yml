@@ -1,0 +1,141 @@
+name: Check and Upload Vector Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *" # 12:00 PM Việt Nam
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ===== PULL STATE =====
+      - name: Pull latest
+        run: git pull origin main || true
+
+      # ===== GET RELEASE INFO (SAFE MODE) =====
+      - name: Get Latest Release
+        id: vector
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+            import os, requests, json
+            repo = "JingMatrix/Vector"
+            headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
+            try:
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+                data = response.json()
+                tag = data.get('tag_name', '')
+                date = data.get('published_at', data.get('created_at', ''))
+                html_url = data.get('html_url', '')
+                
+                assets = data.get('assets', [])
+                # Tìm asset zip đầu tiên (thường là module hoặc app)
+                zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
+                
+                if zip_asset:
+                    file_name = zip_asset['name']
+                    dl_url = zip_asset['browser_download_url']
+                    size = zip_asset['size']
+                else:
+                    file_name = f"Vector-{tag}.zip"
+                    dl_url = f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
+                    size = 0
+                
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    f.write(f"tag={tag}\nfile_name={file_name}\ndl_url={dl_url}\nsize={size}\ndate={date}\nhtml_url={html_url}\n")
+            except Exception as e:
+                print(f"Error: {e}"); exit(1)
+
+      # ===== CHECK STATE =====
+      - name: Check State
+        id: check
+        run: |
+          touch vector_state.txt
+          if [ "${{ steps.vector.outputs.tag }}" = "$(cat vector_state.txt)" ]; then 
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else 
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ===== DOWNLOAD =====
+      - name: Download Asset
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          curl -L -o "${{ steps.vector.outputs.file_name }}" "${{ steps.vector.outputs.dl_url }}"
+
+      # ===== NOTIFICATION (TELEGRAM) =====
+      - name: Send Notification to Telegram
+        if: steps.check.outputs.skip != 'true'
+        uses: xireiki/channel-post@v1
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
+          context: |
+            https://github.com/JingMatrix/Vector
+          parse_mode: HTML
+          method: sendMessage
+
+      # ===== UPLOAD FILE (PYTHON) =====
+      - name: Upload to Telegram via Python
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TAG: ${{ steps.vector.outputs.tag }}
+          URL: ${{ steps.vector.outputs.html_url }}
+          SIZE: ${{ steps.vector.outputs.size }}
+          DATE: ${{ steps.vector.outputs.date }}
+          FILE_NAME: ${{ steps.vector.outputs.file_name }}
+        shell: python
+        run: |
+          import os, requests, datetime
+          
+          def get_size(b):
+              b = int(b)
+              for unit in ['B','KB','MB']:
+                  if b < 1024: return f"{b:.2f} {unit}"
+                  b /= 1024
+              return f"{b:.2f} MB"
+
+          bot_token = os.environ['BOT_TOKEN']
+          chat_id = os.environ['CHAT_ID']
+          tag, url = os.environ['TAG'], os.environ['URL']
+          file_name = os.environ['FILE_NAME']
+          size = get_size(os.environ['SIZE'])
+          
+          # Xử lý ngày tháng (giờ VN)
+          try:
+              date_obj = datetime.datetime.strptime(os.environ['DATE'], "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+              date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+          except: date_str = "N/A"
+
+          caption = (f"<b>🚀 Vector New Update!</b>\n\n"
+                     f"📦 Phiên bản: <code>{tag}</code>\n"
+                     f"📊 Dung lượng: <code>{size}</code>\n"
+                     f"📅 Cập nhật: <code>{date_str}</code>\n\n"
+                     f"<a href='{url}'>🔗 Xem chi tiết trên GitHub</a>")
+          
+          with open(file_name, 'rb') as f:
+              files = {'document': (file_name, f)}
+              data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}
+              requests.post(f"https://api.telegram.org/bot{bot_token}/sendDocument", data=data, files=files)
+
+      # ===== SAVE & COMMIT (SAFE PUSH) =====
+      - name: Save new state
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "${{ steps.vector.outputs.tag }}" > vector_state.txt
+          git add vector_state.txt
+          git commit -m "Update Vector state to ${{ steps.vector.outputs.tag }}" || exit 0
+          git pull --rebase origin main
+          git push origin main
