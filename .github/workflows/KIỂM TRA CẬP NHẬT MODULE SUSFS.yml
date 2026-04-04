@@ -21,16 +21,26 @@ jobs:
         run: |
           JSON=$(curl -s https://api.github.com/repos/sidex15/susfs4ksu-module/releases/latest)
           TAG=$(echo "$JSON" | jq -r '.tag_name')
-          FILE_NAME=$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith(".zip")) | .name' | head -n 1)
-          DL_URL=$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
           
+          # Lấy thông tin asset zip
+          ASSET=$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith(".zip"))' | head -n 1)
+          FILE_NAME=$(echo "$ASSET" | jq -r '.name')
+          DL_URL=$(echo "$ASSET" | jq -r '.browser_download_url')
+          SIZE=$(echo "$ASSET" | jq -r '.size')
+          DATE=$(echo "$JSON" | jq -r '.published_at')
+
           if [ -z "$FILE_NAME" ] || [ "$FILE_NAME" = "null" ]; then
             FILE_NAME="susfs4ksu-${TAG}.zip"
             DL_URL="https://github.com/sidex15/susfs4ksu-module/archive/refs/tags/${TAG}.zip"
+            SIZE="0"
+            DATE=$(echo "$JSON" | jq -r '.created_at')
           fi
+
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
           echo "dl_url=$DL_URL" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
 
       - name: Check State
         id: check
@@ -49,9 +59,24 @@ jobs:
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         shell: python
         run: |
-          import os, requests
+          import os, requests, datetime
+          
+          def get_size(b):
+              for unit in ['B','KB','MB']:
+                  if b < 1024: return f"{b:.2f} {unit}"
+                  b /= 1024
+          
           tag, file_name = "${{ steps.info.outputs.tag }}", "${{ steps.info.outputs.file_name }}"
-          caption = f"<b>🚀 SUSFS Module Update!</b>\n\nVersion: <code>{tag}</code>"
+          size = get_size(int("${{ steps.info.outputs.size }}"))
+          date_raw = "${{ steps.info.outputs.date }}"
+          date_obj = datetime.datetime.strptime(date_raw, "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+          date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+
+          caption = (f"<b>🚀 SUSFS Module Update!</b>\n\n"
+                     f"📦 Phiên bản: <code>{tag}</code>\n"
+                     f"📊 Dung lượng: <code>{size}</code>\n"
+                     f"📅 Cập nhật: <code>{date_str}</code>")
+          
           with open(file_name, 'rb') as f:
               requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
                             data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
