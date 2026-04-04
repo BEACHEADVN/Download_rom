@@ -1,0 +1,111 @@
+name: Check and Upload Integrity-Box Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * *" # 12:00 PM giờ Việt Nam
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ===== PULL STATE =====
+      - name: Pull latest
+        run: git pull origin main || true
+
+      # ===== GET LATEST RELEASE INFO =====
+      - name: Get Latest Release
+        id: integrity
+        run: |
+          JSON=$(curl -s https://api.github.com/repos/MeowDump/Integrity-Box/releases/latest)
+          TAG=$(echo "$JSON" | jq -r '.tag_name')
+          
+          # Tìm asset có đuôi .zip (thường là module Magisk/KernelSU)
+          DL_URL=$(echo "$JSON" | jq -r '.assets[] | select(.name | endswith(".zip")) | .browser_download_url' | head -n 1)
+          HTML_URL=$(echo "$JSON" | jq -r '.html_url')
+
+          # Nếu không có asset zip, dùng link fallback là source code
+          if [ -z "$DL_URL" ] || [ "$DL_URL" = "null" ]; then
+            DL_URL="https://github.com/MeowDump/Integrity-Box/archive/refs/tags/${TAG}.zip"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "dl_url=$DL_URL" >> $GITHUB_OUTPUT
+          echo "html_url=$HTML_URL" >> $GITHUB_OUTPUT
+
+      # ===== CHECK STATE =====
+      - name: Check State
+        id: check
+        run: |
+          TAG="${{ steps.integrity.outputs.tag }}"
+          STATE_FILE="integrity_state.txt"
+          touch $STATE_FILE
+          LAST_TAG=$(cat $STATE_FILE)
+          if [ "$TAG" = "$LAST_TAG" ]; then echo "skip=true" >> $GITHUB_OUTPUT; else echo "skip=false" >> $GITHUB_OUTPUT; fi
+
+      # ===== DOWNLOAD =====
+      - name: Download Asset
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          curl -L -o "integrity_temp.zip" "${{ steps.integrity.outputs.dl_url }}"
+          ls -lh integrity_temp.zip
+
+      # ===== TELEGRAM UPLOAD (PYTHON) =====
+      - name: Upload to Telegram via Python
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TAG: ${{ steps.integrity.outputs.tag }}
+          URL: ${{ steps.integrity.outputs.html_url }}
+        shell: python
+        run: |
+          import os
+          import requests
+
+          bot_token = os.environ['BOT_TOKEN']
+          chat_id = os.environ['CHAT_ID']
+          tag = os.environ['TAG']
+          url = os.environ['URL']
+          
+          # Đổi tên file theo phiên bản
+          old_name = "integrity_temp.zip"
+          new_name = f"Integrity-Box-{tag}.zip"
+          os.rename(old_name, new_name)
+          
+          caption = f"<b>📦 Integrity-Box New Update!</b>\n\nVersion: <code>{tag}</code>\n\n<a href='{url}'>🔗 Xem chi tiết trên GitHub</a>"
+          
+          print(f"Đang gửi file: {new_name}...")
+          
+          with open(new_name, 'rb') as f:
+              # Gửi kèm tên file mới để hiển thị đúng trên Telegram
+              files = {'document': (new_name, f)}
+              data = {
+                  'chat_id': chat_id,
+                  'caption': caption,
+                  'parse_mode': 'HTML'
+              }
+              response = requests.post(f"https://api.telegram.org/bot{bot_token}/sendDocument", data=data, files=files)
+              
+          if response.status_code == 200:
+              print(f"Gửi thành công!")
+          else:
+              print(f"Lỗi: {response.text}")
+              exit(1)
+
+      # ===== SAVE & COMMIT =====
+      - name: Save new state
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          echo "${{ steps.integrity.outputs.tag }}" > integrity_state.txt
+          git config user.name "actions"
+          git config user.email "actions@github.com"
+          git add integrity_state.txt
+          git commit -m "Update Integrity-Box state to ${{ steps.integrity.outputs.tag }}" || exit 0
+          git push
