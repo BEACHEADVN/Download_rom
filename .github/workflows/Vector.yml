@@ -37,8 +37,13 @@ jobs:
                 html_url = data.get('html_url', '')
                 
                 assets = data.get('assets', [])
-                # Tìm asset zip đầu tiên (thường là module hoặc app)
-                zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
+                
+                # SỬA TẠI ĐÂY: Chỉ tìm file chứa "Release" và kết thúc bằng ".zip"
+                zip_asset = next((a for a in assets if "Release" in a['name'] and a['name'].endswith('.zip')), None)
+                
+                # Nếu không thấy bản Release, thử lấy bản zip bất kỳ (đề phòng tác giả đổi cách đặt tên)
+                if not zip_asset:
+                    zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
                 
                 if zip_asset:
                     file_name = zip_asset['name']
@@ -111,7 +116,6 @@ jobs:
           file_name = os.environ['FILE_NAME']
           size = get_size(os.environ['SIZE'])
           
-          # Xử lý ngày tháng (giờ VN)
           try:
               date_obj = datetime.datetime.strptime(os.environ['DATE'], "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
               date_str = date_obj.strftime("%d/%m/%Y %H:%M")
