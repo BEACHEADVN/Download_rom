@@ -43,10 +43,10 @@ jobs:
         id: check
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          touch uploaded.txt # Tạo file nếu chưa có để tránh lỗi grep
+          touch rom_uploaded.txt # Tạo file nếu chưa có để tránh lỗi grep
 
-          if grep -Fq "$FILE|" uploaded.txt; then
-            ID=$(grep -F "$FILE|" uploaded.txt | tail -n1 | cut -d '|' -f2)
+          if grep -Fq "$FILE|" rom_uploaded.txt; then
+            ID=$(grep -F "$FILE|" rom_uploaded.txt | tail -n1 | cut -d '|' -f2)
             
             # Kiểm tra xem file trên Pixeldrain còn sống không (HTTP 200)
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://pixeldrain.com/api/file/$ID)
@@ -94,9 +94,9 @@ jobs:
           ID="${{ steps.pd.outputs.id }}"
 
           # Xóa dòng cũ nếu có và thêm dòng mới
-          grep -v -F "$FILE|" uploaded.txt > tmp.txt 2>/dev/null || true
+          grep -v -F "$FILE|" rom_uploaded.txt > tmp.txt 2>/dev/null || true
           echo "$FILE|$ID" >> tmp.txt
-          mv tmp.txt uploaded.txt
+          mv tmp.txt rom_uploaded.txt
 
       # ===== COMMIT (Chỉ chạy nếu skip=false) =====
       - name: Commit
@@ -104,7 +104,7 @@ jobs:
         run: |
           git config user.name "actions"
           git config user.email "actions@github.com"
-          git add uploaded.txt
+          git add rom_uploaded.txt
           git commit -m "Update state: ${{ steps.rom.outputs.file }}" || exit 0
           git push
 
