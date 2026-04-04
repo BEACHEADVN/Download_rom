@@ -25,6 +25,8 @@ jobs:
         run: |
           JSON=$(curl -s https://api.github.com/repos/bindhosts/bindhosts/releases/latest)
           TAG=$(echo "$JSON" | jq -r '.tag_name')
+          
+          # Tìm đúng Asset có tên là bindhosts.zip
           DL_URL=$(echo "$JSON" | jq -r '.assets[] | select(.name == "bindhosts.zip") | .browser_download_url')
           HTML_URL=$(echo "$JSON" | jq -r '.html_url')
 
@@ -50,10 +52,10 @@ jobs:
       - name: Download Asset
         if: steps.check.outputs.skip != 'true'
         run: |
-          curl -L -o "bindhosts.zip" "${{ steps.bindhosts.outputs.dl_url }}"
-          ls -lh bindhosts.zip
+          curl -L -o "bindhosts_temp.zip" "${{ steps.bindhosts.outputs.dl_url }}"
+          ls -lh bindhosts_temp.zip
 
-      # ===== TELEGRAM UPLOAD (SỬ DỤNG PYTHON) =====
+      # ===== TELEGRAM UPLOAD (PYTHON) =====
       - name: Upload to Telegram via Python
         if: steps.check.outputs.skip != 'true'
         env:
@@ -70,14 +72,21 @@ jobs:
           chat_id = os.environ['CHAT_ID']
           tag = os.environ['TAG']
           url = os.environ['URL']
-          file_path = "bindhosts.zip"
-
+          
+          # File gốc vừa tải về
+          old_name = "bindhosts_temp.zip"
+          # Tên file mới theo phiên bản (ví dụ: bindhosts-v2.1.2.zip)
+          new_name = f"bindhosts-{tag}.zip"
+          
+          # Đổi tên file vật lý trên ổ đĩa
+          os.rename(old_name, new_name)
+          
           caption = f"<b>🚀 Bindhosts New Update!</b>\n\nVersion: <code>{tag}</code>\n\n<a href='{url}'>🔗 Xem chi tiết trên GitHub</a>"
           
-          print(f"Đang gửi file: {file_path}...")
+          print(f"Đang gửi file: {new_name}...")
           
-          with open(file_path, 'rb') as f:
-              files = {'document': f}
+          with open(new_name, 'rb') as f:
+              files = {'document': (new_name, f)} # Gửi kèm tên file mới
               data = {
                   'chat_id': chat_id,
                   'caption': caption,
@@ -86,9 +95,9 @@ jobs:
               response = requests.post(f"https://api.telegram.org/bot{bot_token}/sendDocument", data=data, files=files)
               
           if response.status_code == 200:
-              print("Gửi Telegram thành công!")
+              print(f"Gửi thành công file {new_name}!")
           else:
-              print(f"Lỗi gửi Telegram: {response.text}")
+              print(f"Lỗi: {response.text}")
               exit(1)
 
       # ===== SAVE & COMMIT =====
