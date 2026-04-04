@@ -52,6 +52,17 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: curl -L -o "${{ steps.info.outputs.file_name }}" "${{ steps.info.outputs.dl_url }}"
 
+      - name: Send Notification to Telegram
+        if: success()
+        uses: xireiki/channel-post@v1
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
+          context: |
+            <a href="https://github.com/Dr-TSNG/ZygiskNext">https://github.com/Dr-TSNG/ZygiskNext</a>
+          parse_mode: HTML
+          method: sendMessage
+
       - name: Telegram
         if: steps.check.outputs.skip != 'true'
         env:
