@@ -1,4 +1,4 @@
-name: Check and Upload Vector Update
+name: Vector
 
 on:
   workflow_dispatch:
