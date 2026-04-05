@@ -3,8 +3,7 @@ name: Auto Socrates ROM (Pixeldrain API)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 5 * * *"
-
+    - cron: "0 * * * *" # Chạy vào phút thứ 0 của mỗi giờ
 permissions:
   contents: write
 
