@@ -1,4 +1,4 @@
-name: Auto Socrates ROM (Pixeldrain API)
+name: Socrates ROM
 
 on:
   workflow_dispatch:
