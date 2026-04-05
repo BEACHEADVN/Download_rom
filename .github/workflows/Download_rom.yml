@@ -3,7 +3,8 @@ name: Auto Socrates ROM (Pixeldrain API)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *" # Chạy vào phút thứ 0 của mỗi giờ
+    - cron: "0 * * * *" # Chạy mỗi tiếng một lần
+
 permissions:
   contents: write
 
@@ -14,101 +15,93 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ===== PULL STATE =====
+      # ===== PULL LATEST STATE =====
       - name: Pull latest
-        run: |
-          git pull origin main || true
+        run: git pull origin main || true
 
-      - name: Install
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 curl grep sed
+          sudo apt-get install -y aria2 curl
 
-      # ===== GET ROM =====
-      - name: Get ROM
+      # ===== GET ROM INFO (SAFE MODE) =====
+      - name: Get Latest ROM
         id: rom
         run: |
+          # Lấy danh sách file từ SourceForge
           BASE_URL="https://sourceforge.net/projects/xiaomi-eu-multilang-miui-roms/files/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/"
-          HTML=$(curl -s "$BASE_URL")
-
+          HTML=$(curl -sL "$BASE_URL")
+          
+          # Tìm file SOCRATES mới nhất
           FILE=$(echo "$HTML" | grep -o 'xiaomi.eu_SOCRATES_OS3[^"]*zip' | sort -V | tail -n 1)
-          URL="https://netix.dl.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/$FILE"
+          
+          # Link tải trực tiếp (sử dụng mirror netix hoặc tự động)
+          URL="https://downloads.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/$FILE"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
 
-      # ===== CHECK PIXELDRAIN =====
-      - name: Check Pixeldrain
+      # ===== CHECK IF ALREADY UPLOADED =====
+      - name: Check Pixeldrain State
         id: check
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          touch rom_uploaded.txt # Tạo file nếu chưa có để tránh lỗi grep
-
-          if grep -Fq "$FILE|" rom_uploaded.txt; then
-            ID=$(grep -F "$FILE|" rom_uploaded.txt | tail -n1 | cut -d '|' -f2)
+          STATE_FILE="rom_uploaded.txt"
+          touch $STATE_FILE # Tạo file nếu chưa tồn tại
+          
+          echo "Checking for: $FILE"
+          
+          if grep -Fq "$FILE|" "$STATE_FILE"; then
+            ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n 1 | cut -d '|' -f2)
             
-            # Kiểm tra xem file trên Pixeldrain còn sống không (HTTP 200)
+            # Kiểm tra xem file trên Pixeldrain còn sống không
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://pixeldrain.com/api/file/$ID)
             
             if [ "$STATUS" = "200" ]; then
               echo "skip=true" >> $GITHUB_OUTPUT
-              echo "Tệp đã tồn tại và còn hiệu lực. Bỏ qua các bước sau."
-              exit 0
+              echo "File đã tồn tại trên Pixeldrain và vẫn còn sống. Skip!"
+            else
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "File có trong log nhưng link Pixeldrain đã chết. Tiến hành tải lại."
             fi
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "File mới hoàn toàn. Tiến hành tải."
           fi
-          echo "skip=false" >> $GITHUB_OUTPUT
 
-      # ===== DOWNLOAD (Chỉ chạy nếu skip=false) =====
-      - name: Download
+      # ===== DOWNLOAD (ONLY IF NEW) =====
+      - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
           aria2c -x 16 -s 16 -k 1M --continue=true \
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
 
-      # ===== UPLOAD (Chỉ chạy nếu skip=false) =====
-      - name: Upload Pixeldrain
+      # ===== UPLOAD PIXELDRAIN (ONLY IF NEW) =====
+      - name: Upload to Pixeldrain
         if: steps.check.outputs.skip != 'true'
         id: pd
         env:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          RESPONSE=$(curl -s -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          # Upload lên Pixeldrain kèm API Key
+          RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          
+          # Lấy ID từ JSON trả về
           ID=$(echo "$RESPONSE" | grep -o '"id":"[^"]*"' | cut -d '"' -f4)
 
           if [ -z "$ID" ]; then
-            echo "Upload failed"
+            echo "Upload lên Pixeldrain thất bại!"
+            echo "Response: $RESPONSE"
             exit 1
           fi
 
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/${ID}" >> $GITHUB_OUTPUT
 
-      # ===== SAVE STATE (Chỉ chạy nếu skip=false) =====
-      - name: Save state
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          FILE="${{ steps.rom.outputs.file }}"
-          ID="${{ steps.pd.outputs.id }}"
-
-          # Xóa dòng cũ nếu có và thêm dòng mới
-          grep -v -F "$FILE|" rom_uploaded.txt > tmp.txt 2>/dev/null || true
-          echo "$FILE|$ID" >> tmp.txt
-          mv tmp.txt rom_uploaded.txt
-
-      # ===== COMMIT (Chỉ chạy nếu skip=false) =====
-      - name: Commit
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          git config user.name "actions"
-          git config user.email "actions@github.com"
-          git add rom_uploaded.txt
-          git commit -m "Update state: ${{ steps.rom.outputs.file }}" || exit 0
-          git push
-
-      # ===== TELEGRAM (Chỉ chạy nếu skip=false) =====
-      - name: Telegram
+      # ===== TELEGRAM NOTIFICATION =====
+      - name: Send Telegram Notification
         if: steps.check.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -116,11 +109,31 @@ jobs:
         run: |
           FILE="${{ steps.rom.outputs.file }}"
           LINK="${{ steps.pd.outputs.link }}"
-
-          # Sử dụng %0A để xuống dòng trong URL Telegram
-          TEXT="<b>Socrates ROM Found!</b>%0A<code>$FILE</code>%0A%0A<a href=\"$LINK\">👉 Download từ Pixeldrain</a>"
-
+          
+          TEXT="<b>🚀 New Socrates ROM Uploaded!</b>%0A%0A📦 File: <code>$FILE</code>%0A🔗 Link: <a href=\"$LINK\">Click here to download</a>"
+          
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             -d chat_id="${CHAT_ID}" \
             -d text="$TEXT" \
             -d parse_mode="HTML"
+
+      # ===== SAVE STATE & SAFE PUSH =====
+      - name: Save State and Push
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          FILE="${{ steps.rom.outputs.file }}"
+          ID="${{ steps.pd.outputs.id }}"
+          STATE_FILE="rom_uploaded.txt"
+          
+          # Ghi log: Tên_file|ID_Pixeldrain
+          echo "$FILE|$ID" >> "$STATE_FILE"
+          
+          git add "$STATE_FILE"
+          git commit -m "Add ROM: $FILE" || exit 0
+          
+          # Dùng Safe Push để tránh lỗi bị reject
+          git pull --rebase origin main
+          git push origin main
