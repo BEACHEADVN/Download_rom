@@ -1,4 +1,4 @@
-name: Check ZygiskNext Update
+name: ZygiskNext
 
 on:
   workflow_dispatch:
