@@ -1,4 +1,4 @@
-name: Check Zygisk-Detach Update
+name: Zygisk-Detach
 
 on:
   workflow_dispatch:
