@@ -3,7 +3,7 @@ name: Auto Socrates ROM (Pixeldrain API)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *" # mỗi giờ
+    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -15,14 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ===== PULL STATE =====
       - name: Pull latest
         run: git pull origin main || true
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 curl
+          sudo apt-get install -y aria2 curl jq
 
       # ===== GET ROM =====
       - name: Get Latest ROM
@@ -32,13 +31,12 @@ jobs:
           HTML=$(curl -sL "$BASE_URL")
 
           FILE=$(echo "$HTML" | grep -o 'xiaomi.eu_SOCRATES_OS3[^"]*zip' | sort -V | tail -n 1)
-
           URL="https://downloads.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/$FILE"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
 
-      # ===== CHECK STATE (NO NETWORK CHECK) =====
+      # ===== CHECK STATE + PIXELDRAIN API =====
       - name: Check Uploaded State
         id: check
         run: |
@@ -46,11 +44,25 @@ jobs:
           STATE_FILE="rom_uploaded.txt"
           touch $STATE_FILE
 
-          echo "Checking for: $FILE"
+          echo "Checking: $FILE"
 
           if grep -Fq "$FILE|" "$STATE_FILE"; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "File đã upload trước đó → SKIP (không check Pixeldrain)"
+            ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
+
+            echo "Found in state with ID: $ID"
+
+            API="https://pixeldrain.com/api/file/$ID/info"
+            RESPONSE=$(curl -s "$API")
+
+            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+
+            if [ "$SUCCESS" = "true" ]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "File vẫn tồn tại trên Pixeldrain → SKIP"
+            else
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "File đã bị xoá → upload lại"
+            fi
           else
             echo "skip=false" >> $GITHUB_OUTPUT
             echo "File mới → upload"
@@ -64,7 +76,7 @@ jobs:
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
 
-      # ===== UPLOAD PIXELDRAIN =====
+      # ===== UPLOAD =====
       - name: Upload to Pixeldrain
         if: steps.check.outputs.skip != 'true'
         id: pd
@@ -75,16 +87,16 @@ jobs:
 
           RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
 
-          ID=$(echo "$RESPONSE" | grep -o '"id":"[^"]*"' | cut -d '"' -f4)
+          ID=$(echo "$RESPONSE" | jq -r '.id')
 
-          if [ -z "$ID" ]; then
-            echo "Upload thất bại!"
+          if [ "$ID" = "null" ] || [ -z "$ID" ]; then
+            echo "Upload failed"
             echo "$RESPONSE"
             exit 1
           fi
 
           echo "id=$ID" >> $GITHUB_OUTPUT
-          echo "link=https://pixeldrain.com/u/${ID}" >> $GITHUB_OUTPUT
+          echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
       # ===== TELEGRAM =====
       - name: Send Telegram Notification
@@ -114,10 +126,13 @@ jobs:
           ID="${{ steps.pd.outputs.id }}"
           STATE_FILE="rom_uploaded.txt"
 
+          # Xoá entry cũ nếu có
+          sed -i "\|^$FILE|d" "$STATE_FILE"
+
           echo "$FILE|$ID" >> "$STATE_FILE"
 
           git add "$STATE_FILE"
-          git commit -m "Add ROM: $FILE" || exit 0
+          git commit -m "Update ROM: $FILE" || exit 0
 
           git pull --rebase origin main
           git push origin main
