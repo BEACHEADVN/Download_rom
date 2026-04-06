@@ -1,4 +1,4 @@
-name: Magisk Manager Checker (Official Only
+name: Magisk
 
 on:
   workflow_dispatch:
@@ -66,6 +66,17 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           curl -L -o "${{ steps.magisk.outputs.file_name }}" "${{ steps.magisk.outputs.dl_url }}"
+
+      - name: Send Notification to Telegram
+        if: steps.check.outputs.skip != 'true'
+        uses: xireiki/channel-post@v1
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
+          context: |
+            https://github.com/topjohnwu/Magisk
+          parse_mode: HTML
+          method: sendMessage
 
       # ===== GỬI TELEGRAM VỚI REPO CARD =====
       - name: Upload to Telegram
