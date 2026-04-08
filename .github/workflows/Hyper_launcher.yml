@@ -113,12 +113,9 @@ jobs:
 
           # Name Card Format cho HyperOS Launcher Module
           caption = (f"<b>📦 HyperOS Launcher Module</b>\n"
-                     f"<i>Magisk/KernelSU Flashable Zip</i>\n"
-                     f"━━━━━━━━━━━━━━━━━━\n"
                      f"🚀 <b>Phiên bản:</b> <code>{tag}</code>\n"
                      f"📊 <b>Dung lượng:</b> <code>{size}</code>\n"
                      f"📅 <b>Cập nhật:</b> <code>{date_str}</code> (VN)\n\n"
-                     f"🔗 <b>Repo:</b> <a href='https://github.com/Mods-Center/HyperOS-Launcher'>Mods-Center/HyperOS-Launcher</a>\n"
                      f"📝 <a href='{url}'>Xem Changelog tại GitHub</a>")
           
           with open(file_name, 'rb') as f:
