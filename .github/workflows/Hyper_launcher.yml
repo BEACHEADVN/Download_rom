@@ -1,4 +1,4 @@
-name: HyperOS Launcher Module Checker
+name: HyperOS Launcher
 
 on:
   workflow_dispatch:
