@@ -118,8 +118,6 @@ jobs:
 
           # Name Card Format cho Hybrid-Mount
           caption = (f"<b>💎 Hybrid-Mount New Update</b>\n"
-                     f"<i>Advanced Mounting System for Android</i>\n"
-                     f"━━━━━━━━━━━━━━━━━━\n"
                      f"📦 <b>Version:</b> <code>{tag}</code>\n"
                      f"📊 <b>Size:</b> <code>{size}</code>\n"
                      f"📅 <b>Date:</b> <code>{date_str}</code> (VN)\n\n"
