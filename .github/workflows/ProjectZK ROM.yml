@@ -24,20 +24,32 @@ jobs:
           sudo apt-get install -y aria2 curl jq
 
       # ===== LẤY THÔNG TIN ROM PROJECTZK =====
+      # ===== GET ROM =====
       - name: Get Latest ROM
         id: rom
         run: |
-          BASE_URL="https://sourceforge.net/projects/projectzk/files/ProjectZK/ZK-EU/ZKOS3.0/"
-          HTML=$(curl -sL "$BASE_URL")
-
-          # Lọc file dành cho Socrates (K60 Pro) của ProjectZK
-          FILE=$(echo "$HTML" | grep -o 'ProjectZK_SOCRATES[^"]*zip' | sort -V | tail -n 1)
-          URL="https://downloads.sourceforge.net/project/projectzk/ProjectZK/ZK-EU/ZKOS3.0/$FILE"
-
-          if [ -z "$FILE" ]; then
-            echo "No file found!"; exit 1
+          # Sử dụng RSS feed để lấy danh sách file chính xác và nhanh nhất
+          RSS_URL="https://sourceforge.net/projects/projectzk/rss?path=/ProjectZK/ZK-EU/ZKOS3.0"
+          XML=$(curl -sL "$RSS_URL")
+      
+          # Lọc file có chứa chữ SOCRATES và đuôi .zip
+          # RSS của SourceForge trả về link dạng /projects/projectzk/files/.../tên_file.zip/download
+          FILE_PATH=$(echo "$XML" | grep -oP '/ProjectZK/ZK-EU/ZKOS3.0/ZKOS_SOCRATES[^<]*\.zip' | head -n 1)
+          
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ Không tìm thấy file ZKOS cho Socrates!"
+            exit 1
           fi
-
+      
+          # Tách lấy tên file từ đường dẫn
+          FILE=$(basename "$FILE_PATH")
+          
+          # Tạo URL download chuẩn
+          URL="https://downloads.sourceforge.net/project/projectzk${FILE_PATH}"
+      
+          echo "Tìm thấy file: $FILE"
+          echo "URL: $URL"
+      
           echo "file=$FILE" >> $GITHUB_OUTPUT
           echo "url=$URL" >> $GITHUB_OUTPUT
 
