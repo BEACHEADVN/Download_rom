@@ -1,4 +1,4 @@
-name: ProjectZK ROM
+name: ProjectZK ROM Mirror
 
 on:
   workflow_dispatch:
@@ -22,47 +22,70 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
+          pip install beautifulsoup4 requests
 
-      # ===== LẤY THÔNG TIN QUA JSON API (ỔN ĐỊNH NHẤT) =====
+      # ===== LẤY THÔNG TIN QUA WEB SCRAPING (PHƯƠNG PHÁP CUỐI CÙNG) =====
       - name: Get Latest ROM
         id: rom
         shell: python
         run: |
-            import os, requests
+            import os, requests, sys
+            from bs4 import BeautifulSoup
 
-            # Sử dụng API JSON của SourceForge để lấy danh sách file trong thư mục
-            folder_url = "https://sourceforge.net/projects/projectzk/files/ProjectZK/ZK-EU/ZKOS3.0/json"
+            # URL thư mục chứa file
+            folder_url = "https://sourceforge.net/projects/projectzk/files/ProjectZK/ZK-EU/ZKOS3.0/"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+            }
             
             try:
-                response = requests.get(folder_url, timeout=30)
-                data = response.json()
+                response = requests.get(folder_url, headers=headers, timeout=30)
+                if response.status_code != 200:
+                    print(f"❌ Không thể truy cập web (Status: {response.status_code})")
+                    sys.exit(1)
                 
-                # 'files' trong JSON chứa danh sách tất cả tệp tin
-                files = data.get('files', [])
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Lọc file có chữ SOCRATES và là file zip
-                socrates_files = [f for f in files if "SOCRATES" in f['name'].upper() and f['name'].endswith(".zip")]
-                
+                # Tìm tất cả các link file trong bảng (thường nằm trong thẻ <a> có title bắt đầu bằng "Click to download")
+                socrates_files = []
+                for link in soup.find_all('a', href=True):
+                    file_url = link['href']
+                    file_name = link.get_text(strip=True)
+                    
+                    if "SOCRATES" in file_name.upper() and file_name.endswith(".zip"):
+                        # Xây dựng URL chuẩn
+                        if "sourceforge.net" not in file_url:
+                            # Link thường có dạng /projects/projectzk/files/.../file.zip/download
+                            clean_url = "https://sourceforge.net" + file_url.split('/download')[0]
+                        else:
+                            clean_url = file_url.split('/download')[0]
+                        
+                        socrates_files.append({
+                            'name': file_name,
+                            'url': clean_url
+                        })
+
                 if not socrates_files:
-                    print("❌ Không tìm thấy file SOCRATES nào trong JSON API!")
-                    exit(1)
-                
-                # Sắp xếp theo thời gian (mới nhất lên đầu)
-                socrates_files.sort(key=lambda x: x['mtime'], reverse=True)
+                    print("❌ Không tìm thấy file SOCRATES nào trên giao diện web!")
+                    sys.exit(1)
+
+                # SourceForge thường để file mới lên đầu, nhưng để chắc chắn ta lấy file đầu tiên tìm thấy
                 latest_file = socrates_files[0]
                 
                 file_name = latest_file['name']
-                # Xây dựng link download trực tiếp
-                # Link: https://downloads.sourceforge.net/project/projectzk/ProjectZK/ZK-EU/ZKOS3.0/Tên_File.zip
-                download_url = f"https://downloads.sourceforge.net/project/projectzk/ProjectZK/ZK-EU/ZKOS3.0/{file_name}"
+                # Chuyển sang link download cho aria2
+                download_url = latest_file['url'].replace("sourceforge.net/projects", "downloads.sourceforge.net/project")
                 
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                     f.write(f"file={file_name}\nurl={download_url}\n")
                 
-                print(f"✅ Tìm thấy qua API: {file_name}")
+                print(f"✅ Tìm thấy qua Scraping: {file_name}")
+                print(f"🔗 URL: {download_url}")
                 
             except Exception as e:
-                print(f"❌ Lỗi API: {e}"); exit(1)
+                print(f"❌ Lỗi Scraping: {e}")
+                sys.exit(1)
 
       # ===== KIỂM TRA TRẠNG THÁI TRÊN PIXELDRAIN =====
       - name: Check Uploaded State
