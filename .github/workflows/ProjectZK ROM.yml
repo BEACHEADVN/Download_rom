@@ -23,31 +23,52 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== LẤY THÔNG TIN ROM PROJECTZK (MỚI) =====
+      # ===== LẤY THÔNG TIN ROM PROJECTZK (PYTHON LOGIC) =====
       - name: Get Latest ROM
         id: rom
+        shell: python
         run: |
-          # Sử dụng RSS feed để lấy link trực tiếp và chính xác nhất
-          RSS_URL="https://sourceforge.net/projects/projectzk/rss?path=/ProjectZK/ZK-EU/ZKOS3.0"
-          XML=$(curl -sL "$RSS_URL")
-          
-          # Lọc link tuyệt đối có chứa SOCRATES và đuôi .zip
-          URL_FULL=$(echo "$XML" | grep -oP 'https://sourceforge.net/projects/projectzk/files/[^<]*ZKOS_SOCRATES[^<]*\.zip' | head -n 1)
+            import os, requests, re, xml.etree.ElementTree as ET
 
-          if [ -z "$URL_FULL" ]; then
-            echo "❌ Không tìm thấy link file trên RSS!"
-            exit 1
-          fi
-
-          # Trích xuất tên file
-          FILE=$(basename "$URL_FULL")
-          
-          # Chuyển đổi sang link download trực tiếp cho aria2
-          URL=$(echo "$URL_FULL" | sed 's/sourceforge.net\/projects/downloads.sourceforge.net\/project/')
-
-          echo "Tìm thấy file: $FILE"
-          echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
+            rss_url = "https://sourceforge.net/projects/projectzk/rss?path=/ProjectZK/ZK-EU/ZKOS3.0"
+            try:
+                # Giả lập User-Agent để tránh bị SourceForge chặn
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                response = requests.get(rss_url, headers=headers, timeout=30)
+                
+                # Parse XML từ RSS
+                root = ET.fromstring(response.content)
+                
+                links = []
+                for item in root.findall('.//item'):
+                    link_node = item.find('link')
+                    if link_node is not None:
+                        links.append(link_node.text)
+                
+                # Regex linh hoạt để tìm link Socrates .zip
+                pattern = re.compile(r'ZKOS_SOCRATES.*\.zip', re.IGNORECASE)
+                
+                target_url = None
+                for l in links:
+                    if pattern.search(l):
+                        # Đảm bảo lấy link sạch, loại bỏ phần /download nếu có
+                        target_url = l.split('/download')[0]
+                        break
+                
+                if not target_url:
+                    print("❌ Không tìm thấy link SOCRATES trong RSS!"); exit(1)
+                
+                file_name = target_url.split('/')[-1]
+                # Chuyển đổi sang link download trực tiếp cho aria2
+                download_url = target_url.replace("sourceforge.net/projects", "downloads.sourceforge.net/project")
+                
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    f.write(f"file={file_name}\nurl={download_url}\n")
+                
+                print(f"✅ Tìm thấy: {file_name}")
+                
+            except Exception as e:
+                print(f"❌ Lỗi: {e}"); exit(1)
 
       # ===== KIỂM TRA TRẠNG THÁI TRÊN PIXELDRAIN =====
       - name: Check Uploaded State
@@ -94,7 +115,7 @@ jobs:
           ID=$(echo "$RESPONSE" | jq -r '.id')
 
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then
-            echo "Upload failed"; exit 1
+            echo "Upload failed"; exit(1)
           fi
 
           SIZE_RAW=$(ls -lh "$FILE" | awk '{print $5}')
@@ -138,7 +159,6 @@ jobs:
           ID="${{ steps.pd.outputs.id }}"
           STATE_FILE="projectzk_uploaded.txt"
 
-          # Xóa dòng cũ nếu có và ghi đè dòng mới
           sed -i "\|^$FILE|d" "$STATE_FILE"
           echo "$FILE|$ID" >> "$STATE_FILE"
 
