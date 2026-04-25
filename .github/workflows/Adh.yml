@@ -1,4 +1,4 @@
-name: Kemono File Downloader (Fixed)
+name: Kemono Advanced Downloader
 
 on:
   workflow_dispatch:
@@ -18,28 +18,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl jq
 
-      # ===== TẢI FILE VỚI REFERER VÀ USER-AGENT =====
+      # ===== TẢI FILE VỚI BỘ HEADER GIẢ LẬP TRÌNH DUYỆT TỐI ĐA =====
       - name: Download File
         id: dl
         run: |
+          # URL CỦA BẠN (HÃY ĐẢM BẢO LẤY LINK MỚI NHẤT TRƯỚC KHI BẤM RUN)
           URL="https://n4.kemono.cr/data/c6/6f/c66fbfcc3f6aedd89bdf9347bcd556221436b47a6be071048fcf3871b97def99.zip?f=%5B4KB%5DN132+White+Bikini_74.zip"
           FILE_NAME="N132_White_Bikini_74.zip"
           
-          echo "Đang tải file bằng curl..."
+          echo "Đang tải file với bộ Header nâng cao..."
           
-          # Kemono yêu cầu Referer là trang chủ hoặc trang post của họ để cho phép tải
-          curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+          # Sử dụng wget hoặc curl với bộ thông số mô phỏng Chrome trên Windows
+          # Thêm các header quan trọng mà Kemono thường kiểm tra
+          curl -L -k \
+               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                -H "Referer: https://kemono.cr/" \
+               -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" \
+               -H "Accept-Language: en-US,en;q=0.9" \
+               -H "Connection: keep-alive" \
+               --retry 5 \
+               --retry-delay 5 \
+               --max-time 600 \
                -o "$FILE_NAME" \
                "$URL"
 
-          # Kiểm tra xem file có thực sự có dung lượng không
-          if [ ! -s "$FILE_NAME" ]; then
-            echo "❌ Lỗi: File tải về bị trống (0KB). Link có thể đã hết hạn."
+          # Kiểm tra dung lượng thực tế
+          SIZE_BYTES=$(stat -c%s "$FILE_NAME" 2>/dev/null || echo 0)
+          
+          if [ "$SIZE_BYTES" -lt 1024 ]; then
+            echo "❌ Lỗi: File quá nhỏ hoặc trống ($SIZE_BYTES bytes). Link đã hết hạn hoặc bị chặn."
+            # In ra nội dung nhận được để debug (có thể là trang lỗi HTML)
+            cat "$FILE_NAME" | head -n 20
             exit 1
           fi
           
-          echo "✅ Tải xong. Dung lượng: $(ls -lh "$FILE_NAME" | awk '{print $5}')"
+          echo "✅ Tải thành công! Dung lượng: $(ls -lh "$FILE_NAME" | awk '{print $5}')"
           echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
 
       # ===== UPLOAD LÊN PIXELDRAIN =====
@@ -65,5 +78,5 @@ jobs:
             exit 1
           fi
           
-          echo "✅ Upload thành công!"
-          echo "🔗 Link: https://pixeldrain.com/u/$ID"
+          echo "✅ Upload hoàn tất!"
+          echo "🔗 Link của bạn: https://pixeldrain.com/u/$ID"
