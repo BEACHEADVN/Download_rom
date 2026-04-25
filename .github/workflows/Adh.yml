@@ -1,4 +1,4 @@
-name: Kemono Advanced Downloader
+name: Kemono Auto Post Downloader
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  download-and-upload:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,66 +17,95 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq
+          pip install beautifulsoup4 requests
 
-      # ===== TẢI FILE VỚI BỘ HEADER GIẢ LẬP TRÌNH DUYỆT TỐI ĐA =====
-      - name: Download File
-        id: dl
+      # ===== LOGIC CÀO LINK VÀ TẢI FILE =====
+      - name: Scrape and Download
+        id: scraper
+        shell: python
         run: |
-          # URL CỦA BẠN (HÃY ĐẢM BẢO LẤY LINK MỚI NHẤT TRƯỚC KHI BẤM RUN)
-          URL="https://n4.kemono.cr/data/c6/6f/c66fbfcc3f6aedd89bdf9347bcd556221436b47a6be071048fcf3871b97def99.zip?f=%5B4KB%5DN132+White+Bikini_74.zip"
-          FILE_NAME="N132_White_Bikini_74.zip"
-          
-          echo "Đang tải file với bộ Header nâng cao..."
-          
-          # Sử dụng wget hoặc curl với bộ thông số mô phỏng Chrome trên Windows
-          # Thêm các header quan trọng mà Kemono thường kiểm tra
-          curl -L -k \
-               -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-               -H "Referer: https://kemono.cr/" \
-               -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" \
-               -H "Accept-Language: en-US,en;q=0.9" \
-               -H "Connection: keep-alive" \
-               --retry 5 \
-               --retry-delay 5 \
-               --max-time 600 \
-               -o "$FILE_NAME" \
-               "$URL"
+            import os, requests, sys
+            from bs4 import BeautifulSoup
 
-          # Kiểm tra dung lượng thực tế
-          SIZE_BYTES=$(stat -c%s "$FILE_NAME" 2>/dev/null || echo 0)
-          
-          if [ "$SIZE_BYTES" -lt 1024 ]; then
-            echo "❌ Lỗi: File quá nhỏ hoặc trống ($SIZE_BYTES bytes). Link đã hết hạn hoặc bị chặn."
-            # In ra nội dung nhận được để debug (có thể là trang lỗi HTML)
-            cat "$FILE_NAME" | head -n 20
-            exit 1
-          fi
-          
-          echo "✅ Tải thành công! Dung lượng: $(ls -lh "$FILE_NAME" | awk '{print $5}')"
-          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+            # URL bài viết bạn cung cấp
+            post_url = "https://kemono.cr/patreon/user/131186049/post/117252586"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': 'https://kemono.cr/'
+            }
 
-      # ===== UPLOAD LÊN PIXELDRAIN =====
+            try:
+                print(f"🔍 Đang quét bài viết: {post_url}")
+                response = requests.get(post_url, headers=headers, timeout=30)
+                if response.status_code != 200:
+                    print(f"❌ Không thể truy cập bài viết (Status: {response.status_code})")
+                    sys.exit(1)
+
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Tìm các link download đính kèm (thường nằm trong class post__attachment)
+                attachments = soup.find_all('a', class_='post__attachment-link')
+                
+                if not attachments:
+                    # Thử tìm các file ảnh/file lớn trong thẻ fileThumb
+                    attachments = soup.find_all('a', href=re.compile(r'/data/'))
+
+                downloaded_files = []
+                
+                for idx, attach in enumerate(attachments):
+                    link = attach['href']
+                    # Sửa link nếu là link tương đối
+                    if link.startswith('/'):
+                        link = "https://kemono.cr" + link
+                    
+                    # Lấy tên file từ thuộc tính download hoặc tên file trong link
+                    file_name = attach.get('download') or link.split('?f=')[-1] or f"file_{idx}.zip"
+                    # Giải mã các ký tự đặc biệt trong tên file (%20 -> space, ...)
+                    import urllib.parse
+                    file_name = urllib.parse.unquote(file_name)
+
+                    print(f"⏳ Đang tải: {file_name}")
+                    
+                    # Tải file sử dụng stream để tiết kiệm RAM
+                    with requests.get(link, headers=headers, stream=True) as r:
+                        r.raise_for_status()
+                        with open(file_name, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                    
+                    if os.path.getsize(file_name) > 0:
+                        print(f"✅ Đã tải xong: {file_name} ({os.path.getsize(file_name)} bytes)")
+                        downloaded_files.append(file_name)
+
+                if not downloaded_files:
+                    print("❌ Không tìm thấy file nào để tải!")
+                    sys.exit(1)
+
+                # Lưu danh sách file vào biến môi trường để bước sau sử dụng
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    f.write(f"files={','.join(downloaded_files)}\n")
+
+            except Exception as e:
+                print(f"❌ Lỗi: {e}")
+                sys.exit(1)
+
+      # ===== UPLOAD TẤT CẢ FILE LÊN PIXELDRAIN =====
       - name: Upload to Pixeldrain
-        id: pd
         env:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
-          FILE="${{ steps.dl.outputs.file_name }}"
-          
-          echo "Đang upload lên Pixeldrain..."
-          if [ -z "$PD_API_KEY" ]; then
-            RESPONSE=$(curl -F "file=@${FILE}" https://pixeldrain.com/api/file)
-          else
-            RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
-          fi
-          
-          ID=$(echo "$RESPONSE" | jq -r '.id')
-          
-          if [ "$ID" = "null" ] || [ -z "$ID" ]; then
-            echo "❌ Upload thất bại!"
-            echo "$RESPONSE"
-            exit 1
-          fi
-          
-          echo "✅ Upload hoàn tất!"
-          echo "🔗 Link của bạn: https://pixeldrain.com/u/$ID"
+          # Đọc danh sách file từ bước trước
+          IFS=',' read -ra ADDR <<< "${{ steps.scraper.outputs.files }}"
+          for FILE in "${ADDR[@]}"; do
+            echo "🚀 Đang upload: $FILE"
+            
+            if [ -z "$PD_API_KEY" ]; then
+              RESPONSE=$(curl -F "file=@$FILE" https://pixeldrain.com/api/file)
+            else
+              RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@$FILE" https://pixeldrain.com/api/file)
+            fi
+            
+            ID=$(echo "$RESPONSE" | jq -r '.id')
+            echo "✅ Xong! Link: https://pixeldrain.com/u/$ID"
+          done
