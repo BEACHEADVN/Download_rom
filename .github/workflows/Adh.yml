@@ -1,0 +1,64 @@
+name: Kemono File Downloader (No Telegram)
+
+on:
+  workflow_dispatch: # Chạy thủ công từ tab Actions
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 curl jq
+
+      # ===== TẢI FILE =====
+      - name: Download File
+        id: dl
+        run: |
+          # URL từ yêu cầu của bạn
+          URL="https://n4.kemono.cr/data/c6/6f/c66fbfcc3f6aedd89bdf9347bcd556221436b47a6be071048fcf3871b97def99.zip?f=%5B4KB%5DN132+White+Bikini_74.zip"
+          
+          # Tên file đầu ra
+          FILE_NAME="N132_White_Bikini_74.zip"
+          
+          echo "Đang tải file từ Kemono..."
+          # Sử dụng User-Agent để tránh bị server chặn
+          aria2c -x 16 -s 16 -k 1M --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -o "$FILE_NAME" "$URL"
+          
+          echo "file_name=$FILE_NAME" >> $GITHUB_OUTPUT
+
+      # ===== UPLOAD LÊN PIXELDRAIN =====
+      - name: Upload to Pixeldrain
+        id: pd
+        env:
+          PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
+        run: |
+          FILE="${{ steps.dl.outputs.file_name }}"
+          
+          echo "Đang upload lên Pixeldrain..."
+          if [ -z "$PD_API_KEY" ]; then
+            # Upload ẩn danh nếu không có API Key
+            RESPONSE=$(curl -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          else
+            # Upload vào tài khoản nếu có API Key
+            RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          fi
+          
+          ID=$(echo "$RESPONSE" | jq -r '.id')
+          
+          if [ "$ID" = "null" ] || [ -z "$ID" ]; then
+            echo "❌ Upload thất bại!"
+            echo "Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Upload thành công!"
+          echo "🔗 Link: https://pixeldrain.com/u/$ID"
