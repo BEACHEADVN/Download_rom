@@ -1,4 +1,4 @@
-name: Kemono API Downloader
+name: Kemono yt-dlp Downloader
 
 on:
   workflow_dispatch:
@@ -13,100 +13,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install yt-dlp & dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq
-          pip install requests
+          # Cài đặt bản yt-dlp mới nhất
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      # ===== LẤY DỮ LIỆU TỪ API VÀ TẢI FILE =====
-      - name: Fetch API and Download
-        id: scraper
-        shell: python
+      # ===== LẤY LINK VÀ TẢI FILE BẰNG YT-DLP =====
+      - name: Download with yt-dlp
+        id: dl
         run: |
-            import os, requests, sys, urllib.parse
+          # URL bài viết (Sử dụng .su thay vì .cr để ổn định hơn)
+          POST_URL="https://kemono.su/patreon/user/131186049/post/117252586"
+          
+          echo "🚀 Đang lấy link và tải bằng yt-dlp..."
+          
+          # yt-dlp sẽ tự động lọc ra các file đính kèm và tải về
+          # --get-filename giúp chúng ta biết tên file sau khi tải
+          yt-dlp --no-check-certificate \
+                 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+                 --restrict-filenames \
+                 "$POST_URL"
 
-            # Thông tin bài viết từ URL của bạn
-            service = "patreon"
-            user_id = "131186049"
-            post_id = "117252586"
-            
-            # Endpoint API của Kemono
-            api_url = f"https://kemono.cr/api/v1/{service}/user/{user_id}/post/{post_id}"
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'application/json'
-            }
-
-            try:
-                print(f"📡 Đang gọi API: {api_url}")
-                response = requests.get(api_url, headers=headers, timeout=30)
-                
-                if response.status_code != 200:
-                    print(f"❌ API lỗi (Status: {response.status_code})")
-                    sys.exit(1)
-                
-                data = response.json()
-                # Kemono API trả về một list, ta lấy phần tử đầu tiên
-                post_data = data[0] if isinstance(data, list) else data
-                
-                # Lấy danh sách file đính kèm (attachments)
-                attachments = post_data.get('attachments', [])
-                # Lấy thêm file chính (file) nếu có
-                main_file = post_data.get('file')
-                if main_file and main_file.get('path'):
-                    attachments.append(main_file)
-
-                if not attachments:
-                    print("❌ Không tìm thấy file đính kèm nào trong dữ liệu JSON!")
-                    sys.exit(1)
-
-                downloaded_files = []
-                for file_info in attachments:
-                    path = file_info.get('path')
-                    name = file_info.get('name') or path.split('/')[-1]
-                    
-                    # Xây dựng link download (thường là n4, n3... tùy server)
-                    # Chúng ta sẽ thử server mặc định là n4
-                    dl_url = f"https://n4.kemono.cr/data{path}?f={urllib.parse.quote(name)}"
-                    
-                    print(f"⏳ Đang tải: {name}")
-                    with requests.get(dl_url, headers=headers, stream=True) as r:
-                        if r.status_code != 200:
-                            # Nếu n4 lỗi, thử sang server gốc (cẩn thận vì link này hay bị chặn)
-                            dl_url = f"https://kemono.cr/data{path}?f={urllib.parse.quote(name)}"
-                            r = requests.get(dl_url, headers=headers, stream=True)
-                        
-                        r.raise_for_status()
-                        with open(name, 'wb') as f:
-                            for chunk in r.iter_content(chunk_size=8192):
-                                f.write(chunk)
-                    
-                    if os.path.exists(name) and os.path.getsize(name) > 0:
-                        print(f"✅ Thành công: {name}")
-                        downloaded_files.append(name)
-
-                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                    f.write(f"files={','.join(downloaded_files)}\n")
-
-            except Exception as e:
-                print(f"❌ Lỗi: {e}")
-                sys.exit(1)
+          # Tìm các file zip vừa tải về (yt-dlp tải vào thư mục hiện tại)
+          FILES=$(ls *.zip 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+          
+          if [ -z "$FILES" ]; then
+            echo "❌ Không tìm thấy file zip nào được tải về!"
+            exit 1
+          fi
+          
+          echo "✅ Đã tải: $FILES"
+          echo "files=$FILES" >> $GITHUB_OUTPUT
 
       # ===== UPLOAD LÊN PIXELDRAIN =====
       - name: Upload to Pixeldrain
         env:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
-          IFS=',' read -ra FILES_ARRAY <<< "${{ steps.scraper.outputs.files }}"
+          # Đọc danh sách file từ bước trước
+          IFS=',' read -ra FILES_ARRAY <<< "${{ steps.dl.outputs.files }}"
+          
           for FILE in "${FILES_ARRAY[@]}"; do
-            echo "🚀 Uploading: $FILE"
+            echo "🚀 Đang upload: $FILE"
+            
             if [ -z "$PD_API_KEY" ]; then
               RESPONSE=$(curl -F "file=@$FILE" https://pixeldrain.com/api/file)
             else
               RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@$FILE" https://pixeldrain.com/api/file)
             fi
+            
             ID=$(echo "$RESPONSE" | jq -r '.id')
-            echo "✅ Link: https://pixeldrain.com/u/$ID"
+            
+            if [ "$ID" != "null" ] && [ -n "$ID" ]; then
+              echo "✅ Thành công! Link: https://pixeldrain.com/u/$ID"
+            else
+              echo "❌ Lỗi upload file: $FILE"
+              echo "Phản hồi từ server: $RESPONSE"
+            fi
           done
