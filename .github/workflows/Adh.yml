@@ -1,4 +1,4 @@
-name: Kemono Auto Post Downloader
+name: Kemono Auto Post Downloader (Fixed)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
         id: scraper
         shell: python
         run: |
-            import os, requests, sys
+            import os, requests, sys, re, urllib.parse
             from bs4 import BeautifulSoup
 
             # URL bài viết bạn cung cấp
@@ -44,37 +44,44 @@ jobs:
 
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Tìm các link download đính kèm (thường nằm trong class post__attachment)
-                attachments = soup.find_all('a', class_='post__attachment-link')
+                # Tìm các link download đính kèm
+                # Ưu tiên các link có class 'post__attachment-link'
+                attachment_nodes = soup.find_all('a', class_='post__attachment-link')
                 
-                if not attachments:
-                    # Thử tìm các file ảnh/file lớn trong thẻ fileThumb
-                    attachments = soup.find_all('a', href=re.compile(r'/data/'))
+                # Nếu không thấy class đó, tìm các link chứa '/data/' và có đuôi .zip
+                if not attachment_nodes:
+                    attachment_nodes = soup.find_all('a', href=re.compile(r'/data/.*\.zip'))
 
                 downloaded_files = []
                 
-                for idx, attach in enumerate(attachments):
+                for idx, attach in enumerate(attachment_nodes):
                     link = attach['href']
-                    # Sửa link nếu là link tương đối
                     if link.startswith('/'):
                         link = "https://kemono.cr" + link
                     
-                    # Lấy tên file từ thuộc tính download hoặc tên file trong link
-                    file_name = attach.get('download') or link.split('?f=')[-1] or f"file_{idx}.zip"
-                    # Giải mã các ký tự đặc biệt trong tên file (%20 -> space, ...)
-                    import urllib.parse
+                    # Lấy tên file: ưu tiên attribute 'download', sau đó là tham số '?f=', cuối cùng là từ link
+                    file_name = attach.get('download')
+                    if not file_name:
+                        query_params = urllib.parse.parse_qs(urllib.parse.urlparse(link).query)
+                        file_name = query_params.get('f', [None])[0]
+                    
+                    if not file_name:
+                        file_name = link.split('/')[-1].split('?')[0]
+
+                    # Giải mã tên file (ví dụ %20 -> khoảng trắng)
                     file_name = urllib.parse.unquote(file_name)
+                    # Loại bỏ ký tự lạ trong tên file để tránh lỗi hệ thống
+                    file_name = re.sub(r'[\\/*?:"<>|]', "", file_name)
 
                     print(f"⏳ Đang tải: {file_name}")
                     
-                    # Tải file sử dụng stream để tiết kiệm RAM
                     with requests.get(link, headers=headers, stream=True) as r:
                         r.raise_for_status()
                         with open(file_name, 'wb') as f:
                             for chunk in r.iter_content(chunk_size=8192):
                                 f.write(chunk)
                     
-                    if os.path.getsize(file_name) > 0:
+                    if os.path.exists(file_name) and os.path.getsize(file_name) > 0:
                         print(f"✅ Đã tải xong: {file_name} ({os.path.getsize(file_name)} bytes)")
                         downloaded_files.append(file_name)
 
@@ -82,7 +89,7 @@ jobs:
                     print("❌ Không tìm thấy file nào để tải!")
                     sys.exit(1)
 
-                # Lưu danh sách file vào biến môi trường để bước sau sử dụng
+                # Lưu danh sách file vào GITHUB_OUTPUT
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                     f.write(f"files={','.join(downloaded_files)}\n")
 
@@ -95,9 +102,9 @@ jobs:
         env:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
-          # Đọc danh sách file từ bước trước
-          IFS=',' read -ra ADDR <<< "${{ steps.scraper.outputs.files }}"
-          for FILE in "${ADDR[@]}"; do
+          # Đọc danh sách file từ bước scraper
+          IFS=',' read -ra FILES_ARRAY <<< "${{ steps.scraper.outputs.files }}"
+          for FILE in "${FILES_ARRAY[@]}"; do
             echo "🚀 Đang upload: $FILE"
             
             if [ -z "$PD_API_KEY" ]; then
@@ -107,5 +114,11 @@ jobs:
             fi
             
             ID=$(echo "$RESPONSE" | jq -r '.id')
-            echo "✅ Xong! Link: https://pixeldrain.com/u/$ID"
+            
+            if [ "$ID" != "null" ] && [ -n "$ID" ]; then
+              echo "✅ Xong! Link: https://pixeldrain.com/u/$ID"
+            else
+              echo "❌ Upload lỗi cho file $FILE"
+              echo "Response: $RESPONSE"
+            fi
           done
