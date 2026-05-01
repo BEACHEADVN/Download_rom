@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ===== BƯỚC 1: GIẢI PHÓNG DUNG LƯỢNG (FIX ERROR 3) =====
+      # ===== BƯỚC 1: DỌN DẸP Ổ CỨNG (FIX ERROR 3) =====
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -25,7 +25,7 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          echo "Dung lượng trống sau khi dọn dẹp:"
+          echo "Dung lượng trống hiện tại:"
           df -h /
 
       - name: Pull latest state
@@ -36,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK ROM VÀ THIẾT LẬP REFERER (FIX ERROR 22) =====
+      # ===== BƯỚC 2: LẤY LINK ROM VÀ REFERER =====
       - name: Get Latest ROM Info
         id: rom
         run: |
@@ -64,21 +64,21 @@ jobs:
 
           if grep -Fq "$FILE|" "$STATE_FILE"; then
             ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
-            # Kiểm tra link Pixeldrain còn sống (200 OK) không
+            # Kiểm tra link Pixeldrain còn sống không
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pixeldrain.com/api/file/$ID/info")
             if [ "$STATUS" = "200" ]; then
               echo "skip=true" >> $GITHUB_OUTPUT
-              echo "✅ File đã có và link vẫn sống. Bỏ qua."
+              echo "✅ File đã có và link vẫn sống. SKIP."
             else
               echo "skip=false" >> $GITHUB_OUTPUT
-              echo "⚠️ Link cũ đã chết. Tiến hành upload lại."
+              echo "⚠️ Link cũ đã chết. Sẽ tải lại."
             fi
           else
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "🆕 Phát hiện ROM mới."
+            echo "🆕 ROM mới hoặc chưa mirror."
           fi
 
-      # ===== BƯỚC 4: TẢI ROM VỚI HEADER CHUẨN =====
+      # ===== BƯỚC 4: TẢI ROM (ĐÃ FIX LỖI OPTION) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
@@ -87,7 +87,6 @@ jobs:
             --max-tries=10 \
             --retry-wait=5 \
             --check-certificate=false \
-            --follow-http=true \
             --referer="${{ steps.rom.outputs.referer }}" \
             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
             -o "${{ steps.rom.outputs.file }}" \
@@ -115,7 +114,7 @@ jobs:
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
-      # ===== BƯỚC 6: GỬI TELEGRAM =====
+      # ===== BƯỚC 6: GỬI THÔNG BÁO TELEGRAM =====
       - name: Send Telegram
         if: steps.check.outputs.skip != 'true'
         env:
@@ -125,14 +124,14 @@ jobs:
           FILE="${{ steps.rom.outputs.file }}"
           LINK="${{ steps.pd.outputs.link }}"
           
-          TEXT="<b>🚀 Socrates ROM Mirror Update</b>%0A%0A📦 File: <code>$FILE</code>%0A🔗 <a href=\"$LINK\">Download (Pixeldrain)</a>"
+          TEXT="<b>🚀 Socrates ROM Mirror Update</b>%0A%0A📦 File: <code>$FILE</code>%0A🔗 <a href=\"$LINK\">Tải từ Pixeldrain</a>"
 
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             -d chat_id="${CHAT_ID}" \
             -d text="$TEXT" \
             -d parse_mode="HTML"
 
-      # ===== BƯỚC 7: LƯU TRẠNG THÁI =====
+      # ===== BƯỚC 7: LƯU TRẠNG THÁI (FIX SED ERROR) =====
       - name: Save State
         if: steps.check.outputs.skip != 'true'
         run: |
@@ -143,10 +142,14 @@ jobs:
           ID="${{ steps.pd.outputs.id }}"
           STATE_FILE="rom_uploaded.txt"
 
-          sed -i "\|^$FILE|d" "$STATE_FILE"
+          # Xóa entry cũ một cách an toàn bằng grep
+          grep -vF "$FILE|" "$STATE_FILE" > "$STATE_FILE.tmp" || true
+          mv "$STATE_FILE.tmp" "$STATE_FILE"
+          
+          # Thêm entry mới
           echo "$FILE|$ID" >> "$STATE_FILE"
 
           git add "$STATE_FILE"
-          git commit -m "Mirror SOCRATES: $FILE" || exit 0
+          git commit -m "Mirror: $FILE" || exit 0
           git pull --rebase origin main
           git push origin main
