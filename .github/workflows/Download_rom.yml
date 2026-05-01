@@ -1,4 +1,4 @@
-name: Socrates ROM Ultimate Mirror
+name: Socrates ROM Ultimate Mirror - Final Hope
 
 on:
   workflow_dispatch:
@@ -22,24 +22,42 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y aria2 curl jq
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install cloudscraper jq
 
-      # ===== BƯỚC 2: LẤY TÊN FILE QUA RSS (KHÔNG BỊ CHẶN) =====
-      - name: Get Latest ROM Info
+      # ===== BƯỚC 2: DÙNG PYTHON ĐỂ LẤY LINK (BYPASS CLOUDFLARE) =====
+      - name: Get ROM Link with Cloudscraper
         id: rom
         run: |
-          PROJECT="eliteroms"
-          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
-          # Lấy tên file từ RSS (nhẹ và không bị Cloudflare soi)
-          FILE=$(curl -sL "https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          python3 <<EOF
+          import cloudscraper
+          import re
+          import os
+
+          scraper = cloudscraper.create_scraper()
+          base_url = "https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
           
-          if [ -z "$FILE" ]; then echo "❌ Không tìm thấy file!"; exit 1; fi
+          # 1. Lấy trang HTML với Cloudscraper (Vượt Cloudflare)
+          response = scraper.get(base_url).text
           
-          echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "project=$PROJECT" >> $GITHUB_OUTPUT
-          echo "folder=$FOLDER" >> $GITHUB_OUTPUT
-          echo "🚀 Target: $FILE"
+          # 2. Tìm file SOCRATES mới nhất
+          files = re.findall(r'EliteRomLite_v4.03_SOCRATES[^"]*zip', response)
+          if not files:
+              print("❌ Không tìm thấy file!")
+              exit(1)
+          
+          latest_file = sorted(list(set(files)))[-1]
+          print(f"🚀 Found: {latest_file}")
+
+          # 3. Lấy link download thực tế (theo dõi redirect)
+          download_page = f"{base_url}{latest_file}/download"
+          # Ghi vào file output của Github Actions
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"file={latest_file}\n")
+              f.write(f"url={download_page}\n")
+          EOF
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -56,35 +74,26 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI TRỰC TIẾP TỪ MIRROR (BYPASS GATEWAY) =====
-      - name: Download ROM
+      # ===== BƯỚC 4: TẢI BẰNG PYTHON (ĐẢM BẢO NHẤT) =====
+      - name: Download ROM using Python
         if: steps.check.outputs.skip != 'true'
         run: |
-          FILE="${{ steps.rom.outputs.file }}"
-          PROJ="${{ steps.rom.outputs.project }}"
-          FLDR="${{ steps.rom.outputs.folder }}"
+          python3 <<EOF
+          import cloudscraper
+          import os
+
+          scraper = cloudscraper.create_scraper()
+          url = "${{ steps.rom.outputs.url }}"
+          filename = "${{ steps.rom.outputs.file }}"
           
-          # Danh sách các Mirror Châu Á uy tín
-          MIRRORS=(
-            "https://azt.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
-            "https://nchc.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
-            "https://jaist.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
-            "https://freefr.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
-          )
-
-          echo "📥 Thử tải từ các Mirror..."
-          for url in "${MIRRORS[@]}"; do
-            echo "🔗 Thử: $url"
-            if aria2c -x 16 -s 16 -k 1M --continue=true --connect-timeout=20 --timeout=20 "$url" -o "$FILE"; then
-              echo "✅ Tải thành công từ mirror này!"
-              break
-            else
-              echo "⚠️ Mirror lỗi, thử cái tiếp theo..."
-              rm -f "$FILE"
-            fi
-          done
-
-          if [ ! -s "$FILE" ]; then echo "❌ Tất cả mirror đều thất bại!"; exit 1; fi
+          print(f"📥 Đang tải: {filename}")
+          with scraper.get(url, stream=True) as r:
+              r.raise_for_status()
+              with open(filename, 'wb') as f:
+                  for chunk in r.iter_content(chunk_size=8192):
+                      f.write(chunk)
+          print("✅ Tải xong!")
+          EOF
 
       # ===== BƯỚC 5: UPLOAD & TELEGRAM =====
       - name: Upload to Pixeldrain
@@ -94,9 +103,12 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
+          # Kiểm tra dung lượng (phải > 1GB)
+          SIZE=$(stat -c%s "$FILE")
+          if [ $SIZE -lt 1073741824 ]; then echo "❌ Lỗi: File quá nhỏ, tải thất bại!"; exit 1; fi
+          
           RESPONSE=$(curl -u ":$PD_API_KEY" -T "$FILE" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
-          if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
@@ -106,7 +118,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TEXT="<b>🚀 Socrates Mirror Done</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
+          TEXT="<b>🚀 Socrates Mirror Success</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
 
       - name: Save State
