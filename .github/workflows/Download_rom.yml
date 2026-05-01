@@ -35,22 +35,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK (DÙNG LINK TRÌNH DUYỆT) =====
+      # ===== BƯỚC 2: LẤY LINK TẢI THỰC SỰ (FIX 8KB) =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
-          HTML=$(curl -sL "$BASE_URL")
-
-          # Lấy tên file zip SOCRATES mới nhất
-          FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
+          PROJECT="eliteroms"
+          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
           
-          # Link này sẽ bắt chước trình duyệt click vào nút Download
-          URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
+          # 1. Tìm tên file mới nhất qua RSS
+          API_RSS="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
+          FILE=$(curl -sL "$API_RSS" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          
+          # 2. Lấy danh sách mirror và chọn một link trực tiếp qua API
+          # Cách này giúp lấy link bắt đầu bằng https://master.dl.sourceforge.net/... (bypass countdown)
+          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?viasf=1"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "referer=$BASE_URL" >> $GITHUB_OUTPUT
+          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
           echo "🚀 Target: $FILE"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
@@ -60,42 +61,35 @@ jobs:
           FILE="${{ steps.rom.outputs.file }}"
           STATE_FILE="rom_uploaded.txt"
           touch $STATE_FILE
-
           if grep -Fq "$FILE|" "$STATE_FILE"; then
             ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pixeldrain.com/api/file/$ID/info")
-            if [ "$STATUS" = "200" ]; then
-              echo "skip=true" >> $GITHUB_OUTPUT
-            else
-              echo "skip=false" >> $GITHUB_OUTPUT
-            fi
+            if [ "$STATUS" = "200" ]; then echo "skip=true" >> $GITHUB_OUTPUT; else echo "skip=false" >> $GITHUB_OUTPUT; fi
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM BẰNG CURL (FIX 403) =====
+      # ===== BƯỚC 4: TẢI ROM (DÙNG ARIA2 VỚI LINK TRỰC TIẾP) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "📥 Starting download with curl..."
-          # -L: Theo dõi redirect
-          # -C -: Tải tiếp nếu đứt gánh
-          # --retry: Thử lại nếu lỗi server
-          # -H: Giả lập trình duyệt thực thụ
-          curl -L -C - \
-            --referer "${{ steps.rom.outputs.referer }}" \
-            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-            --retry 5 \
-            --retry-delay 10 \
-            --connect-timeout 60 \
+          echo "📥 Downloading with aria2..."
+          # Dùng aria2 trở lại vì link này là link trực tiếp, aria2 sẽ kéo nhanh hơn curl
+          aria2c -x 16 -s 16 -k 1M \
+            --continue=true \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --check-certificate=false \
+            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
           
-          if [ ! -f "${{ steps.rom.outputs.file }}" ]; then
-            echo "❌ Download failed!"
+          # Kiểm tra nếu dung lượng quá nhỏ (dưới 100MB) thì báo lỗi
+          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
+          if [ $SIZE -lt 104857600 ]; then
+            echo "❌ File quá nhỏ ($SIZE bytes), có vẻ vẫn tải nhầm trang HTML!"
             exit 1
           fi
-          echo "✅ Download finished. Size: $(du -sh "${{ steps.rom.outputs.file }}")"
 
       # ===== BƯỚC 5: UPLOAD PIXELDRAIN =====
       - name: Upload to Pixeldrain
@@ -105,8 +99,8 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Tăng timeout upload vì file ROM rất nặng
-          RESPONSE=$(curl -u ":$PD_API_KEY" --connect-timeout 120 -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          # Sử dụng stream upload để tiết kiệm RAM
+          RESPONSE=$(curl -u ":$PD_API_KEY" -T "${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
