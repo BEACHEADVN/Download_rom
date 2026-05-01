@@ -35,24 +35,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK TẢI THỰC SỰ (FIX 8KB) =====
+      # ===== BƯỚC 2: LẤY LINK VỚI COOKIE (FIX 403) =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          PROJECT="eliteroms"
-          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
+          BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
           
-          # 1. Tìm tên file mới nhất qua RSS
-          API_RSS="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
-          FILE=$(curl -sL "$API_RSS" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          # 1. Tìm tên file
+          HTML=$(curl -sL "$BASE_URL")
+          FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
           
-          # 2. Lấy danh sách mirror và chọn một link trực tiếp qua API
-          # Cách này giúp lấy link bắt đầu bằng https://master.dl.sourceforge.net/... (bypass countdown)
-          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?viasf=1"
+          # 2. Quan trọng: Dùng curl để đi xuyên qua các lớp redirect và lấy link cuối cùng
+          # Lệnh này sẽ giả lập việc click download và nhận link mirror trực tiếp
+          FINAL_URL=$(curl -I -L -s -o /dev/null -w "%{url_effective}" \
+            -H "User-Agent: $UA" \
+            -H "Referer: $BASE_URL" \
+            "https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download")
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
-          echo "🚀 Target: $FILE"
+          echo "url=$FINAL_URL" >> $GITHUB_OUTPUT
+          echo "🚀 ROM Target: $FILE"
+          echo "🔗 Direct Link: $FINAL_URL"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -69,12 +73,11 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (DÙNG ARIA2 VỚI LINK TRỰC TIẾP) =====
+      # ===== BƯỚC 4: TẢI ROM (DÙNG LINK ĐÃ RESOLVE) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "📥 Downloading with aria2..."
-          # Dùng aria2 trở lại vì link này là link trực tiếp, aria2 sẽ kéo nhanh hơn curl
+          # Sử dụng aria2 với link cuối cùng đã được curl "bóc tách"
           aria2c -x 16 -s 16 -k 1M \
             --continue=true \
             --max-tries=10 \
@@ -84,10 +87,10 @@ jobs:
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
           
-          # Kiểm tra nếu dung lượng quá nhỏ (dưới 100MB) thì báo lỗi
+          # Kiểm tra dung lượng
           SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
           if [ $SIZE -lt 104857600 ]; then
-            echo "❌ File quá nhỏ ($SIZE bytes), có vẻ vẫn tải nhầm trang HTML!"
+            echo "❌ File quá nhỏ ($SIZE bytes). Tải lỗi!"
             exit 1
           fi
 
@@ -99,7 +102,7 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Sử dụng stream upload để tiết kiệm RAM
+          # Dùng phương pháp PUT để upload ổn định hơn cho file lớn
           RESPONSE=$(curl -u ":$PD_API_KEY" -T "${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
