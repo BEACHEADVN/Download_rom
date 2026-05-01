@@ -33,30 +33,24 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 curl jq
+          sudo apt-get install -y curl jq
+          # Cài đặt yt-dlp bản mới nhất để xử lý link SourceForge
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
 
-      # ===== BƯỚC 2: LẤY LINK VỚI COOKIE (FIX 403) =====
+      # ===== BƯỚC 2: LẤY THÔNG TIN ROM =====
       - name: Get Latest ROM Info
         id: rom
         run: |
           BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-          
-          # 1. Tìm tên file
           HTML=$(curl -sL "$BASE_URL")
           FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
           
-          # 2. Quan trọng: Dùng curl để đi xuyên qua các lớp redirect và lấy link cuối cùng
-          # Lệnh này sẽ giả lập việc click download và nhận link mirror trực tiếp
-          FINAL_URL=$(curl -I -L -s -o /dev/null -w "%{url_effective}" \
-            -H "User-Agent: $UA" \
-            -H "Referer: $BASE_URL" \
-            "https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download")
+          URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$FINAL_URL" >> $GITHUB_OUTPUT
+          echo "url=$URL" >> $GITHUB_OUTPUT
           echo "🚀 ROM Target: $FILE"
-          echo "🔗 Direct Link: $FINAL_URL"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -73,24 +67,27 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (DÙNG LINK ĐÃ RESOLVE) =====
+      # ===== BƯỚC 4: TẢI ROM (DÙNG YT-DLP VƯỢT RÀO) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          # Sử dụng aria2 với link cuối cùng đã được curl "bóc tách"
-          aria2c -x 16 -s 16 -k 1M \
-            --continue=true \
-            --max-tries=10 \
-            --retry-wait=5 \
-            --check-certificate=false \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-            -o "${{ steps.rom.outputs.file }}" \
-            "${{ steps.rom.outputs.url }}"
+          echo "📥 Downloading with yt-dlp engine..."
+          # yt-dlp tự động xử lý cookie, user-agent và redirect cực tốt
+          yt-dlp --get-url "${{ steps.rom.outputs.url }}" > direct_link.txt
           
-          # Kiểm tra dung lượng
-          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
-          if [ $SIZE -lt 104857600 ]; then
-            echo "❌ File quá nhỏ ($SIZE bytes). Tải lỗi!"
+          FINAL_URL=$(cat direct_link.txt)
+          echo "Direct link obtained: $FINAL_URL"
+
+          # Tiến hành tải thật sự
+          # --no-part: không tạo file tạm .part
+          # --output: đặt tên file chính xác
+          yt-dlp --no-part --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+                 -o "${{ steps.rom.outputs.file }}" \
+                 "$FINAL_URL"
+
+          # Kiểm tra dung lượng cuối cùng
+          if [ ! -s "${{ steps.rom.outputs.file }}" ] || [ $(stat -c%s "${{ steps.rom.outputs.file }}") -lt 104857600 ]; then
+            echo "❌ File vẫn lỗi hoặc quá nhỏ!"
             exit 1
           fi
 
@@ -102,7 +99,7 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Dùng phương pháp PUT để upload ổn định hơn cho file lớn
+          # Stream upload bằng -T (PUT) để tránh lỗi RAM trên server yếu
           RESPONSE=$(curl -u ":$PD_API_KEY" -T "${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
