@@ -30,27 +30,35 @@ jobs:
       - name: Pull latest state
         run: git pull origin main || true
 
-      - name: Install dependencies
+      - name: Install dependencies (Impersonation)
         run: |
           sudo apt-get update
           sudo apt-get install -y curl jq
-          # Cài đặt yt-dlp bản mới nhất để xử lý link SourceForge
+          # Cài đặt yt-dlp bản mới nhất
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
+          # Cài đặt bộ giải mã TLS Impersonate để vượt Cloudflare
+          python3 -m pip install --upgrade pip
+          python3 -m pip install curl_cffi
 
-      # ===== BƯỚC 2: LẤY THÔNG TIN ROM =====
+      # ===== BƯỚC 2: LẤY LINK TRỰC TIẾP TỪ MIRROR =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
-          HTML=$(curl -sL "$BASE_URL")
-          FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
+          # Dùng API RSS để lấy tên file mà không bị Cloudflare chặn trang HTML
+          PROJECT="eliteroms"
+          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
+          API_RSS="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
+          FILE=$(curl -sL "$API_RSS" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
           
-          URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
+          # Tự dựng link mirror trực tiếp (Bypass Cloudflare Gateway)
+          # Thử mirror NCHC (Đài Loan) hoặc JAIST (Nhật Bản) thường rất ổn định với GitHub
+          DIRECT_URL="https://nchc.dl.sourceforge.net/project/$PROJECT/$FOLDER/$FILE"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
           echo "🚀 ROM Target: $FILE"
+          echo "🔗 Mirror Link: $DIRECT_URL"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -67,29 +75,30 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (DÙNG YT-DLP VƯỢT RÀO) =====
+      # ===== BƯỚC 4: TẢI ROM VỚI IMPERSONATE =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "📥 Downloading with yt-dlp engine..."
-          # yt-dlp tự động xử lý cookie, user-agent và redirect cực tốt
-          yt-dlp --get-url "${{ steps.rom.outputs.url }}" > direct_link.txt
+          echo "📥 Downloading with Cloudflare Bypass..."
           
-          FINAL_URL=$(cat direct_link.txt)
-          echo "Direct link obtained: $FINAL_URL"
-
-          # Tiến hành tải thật sự
-          # --no-part: không tạo file tạm .part
-          # --output: đặt tên file chính xác
-          yt-dlp --no-part --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+          # Sử dụng yt-dlp với engine curl_cffi để giả mạo trình duyệt Chrome thật
+          yt-dlp --impersonate chrome --no-part \
+                 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
                  -o "${{ steps.rom.outputs.file }}" \
-                 "$FINAL_URL"
+                 "${{ steps.rom.outputs.url }}"
 
-          # Kiểm tra dung lượng cuối cùng
-          if [ ! -s "${{ steps.rom.outputs.file }}" ] || [ $(stat -c%s "${{ steps.rom.outputs.file }}") -lt 104857600 ]; then
-            echo "❌ File vẫn lỗi hoặc quá nhỏ!"
-            exit 1
+          # Kiểm tra file
+          if [ ! -s "${{ steps.rom.outputs.file }}" ]; then
+            echo "❌ Mirror NCHC lỗi, thử mirror JAIST..."
+            PROJECT="eliteroms"
+            FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
+            ALT_URL="https://jaist.dl.sourceforge.net/project/$PROJECT/$FOLDER/${{ steps.rom.outputs.file }}"
+            
+            yt-dlp --impersonate chrome --no-part -o "${{ steps.rom.outputs.file }}" "$ALT_URL"
           fi
+
+          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
+          if [ $SIZE -lt 104857600 ]; then exit 1; fi
 
       # ===== BƯỚC 5: UPLOAD PIXELDRAIN =====
       - name: Upload to Pixeldrain
@@ -99,7 +108,7 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Stream upload bằng -T (PUT) để tránh lỗi RAM trên server yếu
+          # Sử dụng PUT upload để ổn định
           RESPONSE=$(curl -u ":$PD_API_KEY" -T "${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
@@ -113,7 +122,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TEXT="<b>🚀 Socrates ROM Mirror</b>%0A%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain Link</a>"
+          TEXT="<b>🚀 Socrates ROM Mirror (Cloudflare Bypassed)</b>%0A%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain Link</a>"
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
 
       # ===== BƯỚC 7: LƯU TRẠNG THÁI =====
