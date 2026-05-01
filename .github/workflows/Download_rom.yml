@@ -17,48 +17,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ===== BƯỚC 1: DỌN DẸP Ổ CỨNG =====
       - name: Free Disk Space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
-      - name: Pull latest state
-        run: git pull origin main || true
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y aria2 curl jq
 
-      - name: Install dependencies (Impersonation)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl jq
-          # Cài đặt yt-dlp bản mới nhất
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
-          # Cài đặt bộ giải mã TLS Impersonate để vượt Cloudflare
-          python3 -m pip install --upgrade pip
-          python3 -m pip install curl_cffi
-
-      # ===== BƯỚC 2: LẤY LINK TRỰC TIẾP TỪ MIRROR =====
+      # ===== BƯỚC 2: LẤY TÊN FILE QUA RSS (KHÔNG BỊ CHẶN) =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          # Dùng API RSS để lấy tên file mà không bị Cloudflare chặn trang HTML
           PROJECT="eliteroms"
           FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
-          API_RSS="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
-          FILE=$(curl -sL "$API_RSS" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          # Lấy tên file từ RSS (nhẹ và không bị Cloudflare soi)
+          FILE=$(curl -sL "https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
           
-          # Tự dựng link mirror trực tiếp (Bypass Cloudflare Gateway)
-          # Thử mirror NCHC (Đài Loan) hoặc JAIST (Nhật Bản) thường rất ổn định với GitHub
-          DIRECT_URL="https://nchc.dl.sourceforge.net/project/$PROJECT/$FOLDER/$FILE"
-
+          if [ -z "$FILE" ]; then echo "❌ Không tìm thấy file!"; exit 1; fi
+          
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
-          echo "🚀 ROM Target: $FILE"
-          echo "🔗 Mirror Link: $DIRECT_URL"
+          echo "project=$PROJECT" >> $GITHUB_OUTPUT
+          echo "folder=$FOLDER" >> $GITHUB_OUTPUT
+          echo "🚀 Target: $FILE"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -70,37 +51,42 @@ jobs:
           if grep -Fq "$FILE|" "$STATE_FILE"; then
             ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pixeldrain.com/api/file/$ID/info")
-            if [ "$STATUS" = "200" ]; then echo "skip=true" >> $GITHUB_OUTPUT; else echo "skip=false" >> $GITHUB_OUTPUT; fi
+            [ "$STATUS" = "200" ] && echo "skip=true" >> $GITHUB_OUTPUT || echo "skip=false" >> $GITHUB_OUTPUT
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM VỚI IMPERSONATE =====
+      # ===== BƯỚC 4: TẢI TRỰC TIẾP TỪ MIRROR (BYPASS GATEWAY) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "📥 Downloading with Cloudflare Bypass..."
+          FILE="${{ steps.rom.outputs.file }}"
+          PROJ="${{ steps.rom.outputs.project }}"
+          FLDR="${{ steps.rom.outputs.folder }}"
           
-          # Sử dụng yt-dlp với engine curl_cffi để giả mạo trình duyệt Chrome thật
-          yt-dlp --impersonate chrome --no-part \
-                 --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-                 -o "${{ steps.rom.outputs.file }}" \
-                 "${{ steps.rom.outputs.url }}"
+          # Danh sách các Mirror Châu Á uy tín
+          MIRRORS=(
+            "https://azt.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
+            "https://nchc.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
+            "https://jaist.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
+            "https://freefr.dl.sourceforge.net/project/$PROJ/$FLDR/$FILE"
+          )
 
-          # Kiểm tra file
-          if [ ! -s "${{ steps.rom.outputs.file }}" ]; then
-            echo "❌ Mirror NCHC lỗi, thử mirror JAIST..."
-            PROJECT="eliteroms"
-            FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
-            ALT_URL="https://jaist.dl.sourceforge.net/project/$PROJECT/$FOLDER/${{ steps.rom.outputs.file }}"
-            
-            yt-dlp --impersonate chrome --no-part -o "${{ steps.rom.outputs.file }}" "$ALT_URL"
-          fi
+          echo "📥 Thử tải từ các Mirror..."
+          for url in "${MIRRORS[@]}"; do
+            echo "🔗 Thử: $url"
+            if aria2c -x 16 -s 16 -k 1M --continue=true --connect-timeout=20 --timeout=20 "$url" -o "$FILE"; then
+              echo "✅ Tải thành công từ mirror này!"
+              break
+            else
+              echo "⚠️ Mirror lỗi, thử cái tiếp theo..."
+              rm -f "$FILE"
+            fi
+          done
 
-          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
-          if [ $SIZE -lt 104857600 ]; then exit 1; fi
+          if [ ! -s "$FILE" ]; then echo "❌ Tất cả mirror đều thất bại!"; exit 1; fi
 
-      # ===== BƯỚC 5: UPLOAD PIXELDRAIN =====
+      # ===== BƯỚC 5: UPLOAD & TELEGRAM =====
       - name: Upload to Pixeldrain
         if: steps.check.outputs.skip != 'true'
         id: pd
@@ -108,36 +94,27 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Sử dụng PUT upload để ổn định
-          RESPONSE=$(curl -u ":$PD_API_KEY" -T "${FILE}" https://pixeldrain.com/api/file)
+          RESPONSE=$(curl -u ":$PD_API_KEY" -T "$FILE" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
           if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
-      # ===== BƯỚC 6: TELEGRAM =====
       - name: Send Telegram
         if: steps.check.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TEXT="<b>🚀 Socrates ROM Mirror (Cloudflare Bypassed)</b>%0A%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain Link</a>"
+          TEXT="<b>🚀 Socrates Mirror Done</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
 
-      # ===== BƯỚC 7: LƯU TRẠNG THÁI =====
       - name: Save State
         if: steps.check.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          FILE="${{ steps.rom.outputs.file }}"
-          ID="${{ steps.pd.outputs.id }}"
-          STATE_FILE="rom_uploaded.txt"
-          grep -vF "$FILE|" "$STATE_FILE" > "$STATE_FILE.tmp" || true
-          mv "$STATE_FILE.tmp" "$STATE_FILE"
-          echo "$FILE|$ID" >> "$STATE_FILE"
-          git add "$STATE_FILE"
-          git commit -m "Mirror: $FILE" || exit 0
-          git pull --rebase origin main
+          echo "${{ steps.rom.outputs.file }}|${{ steps.pd.outputs.id }}" >> rom_uploaded.txt
+          git add rom_uploaded.txt
+          git commit -m "Mirror: ${{ steps.rom.outputs.file }}"
           git push origin main
