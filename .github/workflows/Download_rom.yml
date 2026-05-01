@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ===== BƯỚC 1: GIẢI PHÓNG DUNG LƯỢNG (FIX ERROR 3) =====
+      # ===== BƯỚC 1: GIẢI PHÓNG DUNG LƯỢNG =====
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -25,7 +25,6 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          echo "Dung lượng trống hiện tại:"
           df -h /
 
       - name: Pull latest state
@@ -36,25 +35,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY THÔNG TIN ROM =====
+      # ===== BƯỚC 2: LẤY LINK QUA API (NHANH & CHÍNH XÁC) =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
-          HTML=$(curl -sL "$BASE_URL")
-
-          # Tìm file zip mới nhất cho SOCRATES
-          FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
+          # 1. Lấy danh sách file từ API SourceForge
+          PROJECT="eliteroms"
+          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
+          API_URL="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
           
-          # Link gốc
-          URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
+          # Tìm file SOCRATES mới nhất
+          FILE=$(curl -sL "$API_URL" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          
+          # 2. Lấy Mirror Link trực tiếp qua API
+          # Sử dụng mirror tự động (autoselect) để tránh treo
+          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?use_mirror=autoselect"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
-          echo "referer=$BASE_URL" >> $GITHUB_OUTPUT
+          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
+          echo "referer=https://sourceforge.net/projects/$PROJECT/files/$FOLDER/" >> $GITHUB_OUTPUT
           echo "🚀 ROM Target: $FILE"
+          echo "🔗 Direct Link: $DIRECT_URL"
 
-      # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI FILE =====
+      # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
         id: check
         run: |
@@ -64,42 +67,34 @@ jobs:
 
           if grep -Fq "$FILE|" "$STATE_FILE"; then
             ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
-            # Kiểm tra link Pixeldrain còn sống không
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pixeldrain.com/api/file/$ID/info")
             if [ "$STATUS" = "200" ]; then
               echo "skip=true" >> $GITHUB_OUTPUT
-              echo "✅ File đã có và link vẫn sống. SKIP."
             else
               echo "skip=false" >> $GITHUB_OUTPUT
-              echo "⚠️ Link cũ đã chết. Sẽ tải lại."
             fi
           else
             echo "skip=false" >> $GITHUB_OUTPUT
-            echo "🆕 ROM mới hoặc chưa mirror."
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (GIẢI QUYẾT LỖI 403) =====
+      # ===== BƯỚC 4: TẢI ROM (DÙNG LINK API) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          # Tìm link mirror trực tiếp bằng curl trước khi đưa vào aria2
-          # Điều này giúp tránh lỗi 403 do SourceForge chặn redirect tự động
-          echo "Resolving direct mirror link..."
-          DIRECT_URL=$(curl -sL -o /dev/null -w "%{url_effective}" "${{ steps.rom.outputs.url }}")
-          
-          echo "Direct Link: $DIRECT_URL"
-
+          # Thêm các tham số tối ưu cho aria2 để tránh bị timeout
           aria2c -x 16 -s 16 -k 1M \
             --continue=true \
-            --max-tries=10 \
-            --retry-wait=5 \
+            --max-tries=5 \
+            --retry-wait=2 \
+            --connect-timeout=30 \
+            --timeout=30 \
             --check-certificate=false \
             --referer="${{ steps.rom.outputs.referer }}" \
             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
             -o "${{ steps.rom.outputs.file }}" \
-            "$DIRECT_URL"
+            "${{ steps.rom.outputs.url }}"
 
-      # ===== BƯỚC 5: UPLOAD LÊN PIXELDRAIN =====
+      # ===== BƯỚC 5: UPLOAD PIXELDRAIN =====
       - name: Upload to Pixeldrain
         if: steps.check.outputs.skip != 'true'
         id: pd
@@ -107,36 +102,21 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          echo "📤 Đang upload: $FILE"
-
           RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
-
-          if [ "$ID" = "null" ] || [ -z "$ID" ]; then
-            echo "❌ Upload thất bại!"
-            echo "$RESPONSE"
-            exit 1
-          fi
-
+          if [ "$ID" = "null" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
-      # ===== BƯỚC 6: GỬI THÔNG BÁO TELEGRAM =====
+      # ===== BƯỚC 6: TELEGRAM =====
       - name: Send Telegram
         if: steps.check.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          FILE="${{ steps.rom.outputs.file }}"
-          LINK="${{ steps.pd.outputs.link }}"
-          
-          TEXT="<b>🚀 Socrates ROM Mirror Update</b>%0A%0A📦 File: <code>$FILE</code>%0A🔗 <a href=\"$LINK\">Tải từ Pixeldrain</a>"
-
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d chat_id="${CHAT_ID}" \
-            -d text="$TEXT" \
-            -d parse_mode="HTML"
+          TEXT="<b>🚀 Socrates ROM Mirror</b>%0A%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain Link</a>"
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
 
       # ===== BƯỚC 7: LƯU TRẠNG THÁI =====
       - name: Save State
@@ -144,18 +124,12 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           FILE="${{ steps.rom.outputs.file }}"
           ID="${{ steps.pd.outputs.id }}"
           STATE_FILE="rom_uploaded.txt"
-
-          # Xóa entry cũ một cách an toàn bằng grep
           grep -vF "$FILE|" "$STATE_FILE" > "$STATE_FILE.tmp" || true
           mv "$STATE_FILE.tmp" "$STATE_FILE"
-          
-          # Thêm entry mới
           echo "$FILE|$ID" >> "$STATE_FILE"
-
           git add "$STATE_FILE"
           git commit -m "Mirror: $FILE" || exit 0
           git pull --rebase origin main
