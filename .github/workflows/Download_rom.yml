@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ===== BƯỚC 1: GIẢI PHÓNG DUNG LƯỢNG =====
+      # ===== BƯỚC 1: DỌN DẸP Ổ CỨNG =====
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -35,27 +35,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK QUA API (NHANH & CHÍNH XÁC) =====
+      # ===== BƯỚC 2: LẤY LINK (DÙNG LINK TRÌNH DUYỆT) =====
       - name: Get Latest ROM Info
         id: rom
         run: |
-          # 1. Lấy danh sách file từ API SourceForge
-          PROJECT="eliteroms"
-          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
-          API_URL="https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER"
+          BASE_URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
+          HTML=$(curl -sL "$BASE_URL")
+
+          # Lấy tên file zip SOCRATES mới nhất
+          FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
           
-          # Tìm file SOCRATES mới nhất
-          FILE=$(curl -sL "$API_URL" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
-          
-          # 2. Lấy Mirror Link trực tiếp qua API
-          # Sử dụng mirror tự động (autoselect) để tránh treo
-          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?use_mirror=autoselect"
+          # Link này sẽ bắt chước trình duyệt click vào nút Download
+          URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
-          echo "referer=https://sourceforge.net/projects/$PROJECT/files/$FOLDER/" >> $GITHUB_OUTPUT
-          echo "🚀 ROM Target: $FILE"
-          echo "🔗 Direct Link: $DIRECT_URL"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "referer=$BASE_URL" >> $GITHUB_OUTPUT
+          echo "🚀 Target: $FILE"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -77,22 +73,29 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (DÙNG LINK API) =====
+      # ===== BƯỚC 4: TẢI ROM BẰNG CURL (FIX 403) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          # Thêm các tham số tối ưu cho aria2 để tránh bị timeout
-          aria2c -x 16 -s 16 -k 1M \
-            --continue=true \
-            --max-tries=5 \
-            --retry-wait=2 \
-            --connect-timeout=30 \
-            --timeout=30 \
-            --check-certificate=false \
-            --referer="${{ steps.rom.outputs.referer }}" \
-            --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+          echo "📥 Starting download with curl..."
+          # -L: Theo dõi redirect
+          # -C -: Tải tiếp nếu đứt gánh
+          # --retry: Thử lại nếu lỗi server
+          # -H: Giả lập trình duyệt thực thụ
+          curl -L -C - \
+            --referer "${{ steps.rom.outputs.referer }}" \
+            --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            --retry 5 \
+            --retry-delay 10 \
+            --connect-timeout 60 \
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
+          
+          if [ ! -f "${{ steps.rom.outputs.file }}" ]; then
+            echo "❌ Download failed!"
+            exit 1
+          fi
+          echo "✅ Download finished. Size: $(du -sh "${{ steps.rom.outputs.file }}")"
 
       # ===== BƯỚC 5: UPLOAD PIXELDRAIN =====
       - name: Upload to Pixeldrain
@@ -102,9 +105,10 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
+          # Tăng timeout upload vì file ROM rất nặng
+          RESPONSE=$(curl -u ":$PD_API_KEY" --connect-timeout 120 -F "file=@${FILE}" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
-          if [ "$ID" = "null" ]; then exit 1; fi
+          if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
