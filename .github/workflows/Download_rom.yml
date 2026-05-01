@@ -17,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ===== BƯỚC 1: DỌN DẸP Ổ CỨNG (FIX ERROR 3) =====
+      # ===== BƯỚC 1: GIẢI PHÓNG DUNG LƯỢNG (FIX ERROR 3) =====
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet
@@ -36,7 +36,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK ROM VÀ REFERER =====
+      # ===== BƯỚC 2: LẤY THÔNG TIN ROM =====
       - name: Get Latest ROM Info
         id: rom
         run: |
@@ -46,7 +46,7 @@ jobs:
           # Tìm file zip mới nhất cho SOCRATES
           FILE=$(echo "$HTML" | grep -o 'EliteRomLite_v4.03_SOCRATES[^"]*zip' | sort -V | tail -n 1)
           
-          # URL kích hoạt mirror tự động của SourceForge
+          # Link gốc
           URL="https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/$FILE/download"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
@@ -78,10 +78,17 @@ jobs:
             echo "🆕 ROM mới hoặc chưa mirror."
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (ĐÃ FIX LỖI OPTION) =====
+      # ===== BƯỚC 4: TẢI ROM (GIẢI QUYẾT LỖI 403) =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
+          # Tìm link mirror trực tiếp bằng curl trước khi đưa vào aria2
+          # Điều này giúp tránh lỗi 403 do SourceForge chặn redirect tự động
+          echo "Resolving direct mirror link..."
+          DIRECT_URL=$(curl -sL -o /dev/null -w "%{url_effective}" "${{ steps.rom.outputs.url }}")
+          
+          echo "Direct Link: $DIRECT_URL"
+
           aria2c -x 16 -s 16 -k 1M \
             --continue=true \
             --max-tries=10 \
@@ -90,7 +97,7 @@ jobs:
             --referer="${{ steps.rom.outputs.referer }}" \
             --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
             -o "${{ steps.rom.outputs.file }}" \
-            "${{ steps.rom.outputs.url }}"
+            "$DIRECT_URL"
 
       # ===== BƯỚC 5: UPLOAD LÊN PIXELDRAIN =====
       - name: Upload to Pixeldrain
@@ -131,7 +138,7 @@ jobs:
             -d text="$TEXT" \
             -d parse_mode="HTML"
 
-      # ===== BƯỚC 7: LƯU TRẠNG THÁI (FIX SED ERROR) =====
+      # ===== BƯỚC 7: LƯU TRẠNG THÁI =====
       - name: Save State
         if: steps.check.outputs.skip != 'true'
         run: |
