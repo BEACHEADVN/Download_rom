@@ -1,4 +1,4 @@
-name: Socrates ROM Ultimate Mirror - Final Hope
+name: Socrates ROM Ultimate Mirror - API Method
 
 on:
   workflow_dispatch:
@@ -22,42 +22,38 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
-      - name: Install Python Dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install cloudscraper jq
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y curl jq aria2
 
-      # ===== BƯỚC 2: DÙNG PYTHON ĐỂ LẤY LINK (BYPASS CLOUDFLARE) =====
-      - name: Get ROM Link with Cloudscraper
+      # ===== BƯỚC 2: LẤY LINK QUA API (KHÔNG QUÉT HTML) =====
+      - name: Get ROM Info via API
         id: rom
         run: |
-          python3 <<EOF
-          import cloudscraper
-          import re
-          import os
+          PROJECT="eliteroms"
+          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
+          
+          # Sử dụng API của SourceForge để lấy danh sách file dưới dạng JSON
+          # API này thường không bị Cloudflare chặn gắt như trang Web
+          API_URL="https://sourceforge.net/projects/$PROJECT/files/$FOLDER/json"
+          RESPONSE=$(curl -sL "$API_URL")
+          
+          # Dùng jq để lọc ra file zip dành cho SOCRATES mới nhất
+          FILE=$(echo "$RESPONSE" | jq -r '.files[].name' | grep 'EliteRomLite_v4.03_SOCRATES' | grep '.zip$' | sort -V | tail -n 1)
+          
+          if [ "$FILE" = "null" ] || [ -z "$FILE" ]; then
+            echo "❌ API không trả về file. Thử dùng RSS dự phòng..."
+            FILE=$(curl -sL "https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
+          fi
 
-          scraper = cloudscraper.create_scraper()
-          base_url = "https://sourceforge.net/projects/eliteroms/files/HyperOS-STABLE-UPDATES/HyperOS-v3.0/"
-          
-          # 1. Lấy trang HTML với Cloudscraper (Vượt Cloudflare)
-          response = scraper.get(base_url).text
-          
-          # 2. Tìm file SOCRATES mới nhất
-          files = re.findall(r'EliteRomLite_v4.03_SOCRATES[^"]*zip', response)
-          if not files:
-              print("❌ Không tìm thấy file!")
-              exit(1)
-          
-          latest_file = sorted(list(set(files)))[-1]
-          print(f"🚀 Found: {latest_file}")
+          if [ -z "$FILE" ]; then echo "❌ Cạn lời, không tìm thấy file!"; exit 1; fi
 
-          # 3. Lấy link download thực tế (theo dõi redirect)
-          download_page = f"{base_url}{latest_file}/download"
-          # Ghi vào file output của Github Actions
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"file={latest_file}\n")
-              f.write(f"url={download_page}\n")
-          EOF
+          # Tạo link download trực tiếp qua Master Mirror để né Cloudflare
+          # v_as_f=1 giúp chỉ định trả về file thay vì trang chờ
+          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?viasf=1"
+
+          echo "file=$FILE" >> $GITHUB_OUTPUT
+          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
+          echo "🚀 Target: $FILE"
 
       # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
       - name: Check State
@@ -74,26 +70,24 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== BƯỚC 4: TẢI BẰNG PYTHON (ĐẢM BẢO NHẤT) =====
-      - name: Download ROM using Python
+      # ===== BƯỚC 4: TẢI ROM (DÙNG CURL VỚI RETRY MẠNH) =====
+      - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          python3 <<EOF
-          import cloudscraper
-          import os
+          echo "📥 Downloading with Curl (Follow Redirects)..."
+          # -L: Theo dõi redirect đến tận Mirror cuối cùng
+          # --retry: Thử lại nhiều lần nếu gặp 403 tạm thời hoặc mạng lag
+          curl -L --retry 10 --retry-delay 5 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -o "${{ steps.rom.outputs.file }}" \
+            "${{ steps.rom.outputs.url }}"
 
-          scraper = cloudscraper.create_scraper()
-          url = "${{ steps.rom.outputs.url }}"
-          filename = "${{ steps.rom.outputs.file }}"
-          
-          print(f"📥 Đang tải: {filename}")
-          with scraper.get(url, stream=True) as r:
-              r.raise_for_status()
-              with open(filename, 'wb') as f:
-                  for chunk in r.iter_content(chunk_size=8192):
-                      f.write(chunk)
-          print("✅ Tải xong!")
-          EOF
+          # Kiểm tra dung lượng (ít nhất 1GB)
+          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
+          if [ $SIZE -lt 1073741824 ]; then
+            echo "❌ File tải về quá nhỏ ($SIZE bytes). Có thể vẫn bị dính HTML!"
+            exit 1
+          fi
 
       # ===== BƯỚC 5: UPLOAD & TELEGRAM =====
       - name: Upload to Pixeldrain
@@ -103,12 +97,9 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          # Kiểm tra dung lượng (phải > 1GB)
-          SIZE=$(stat -c%s "$FILE")
-          if [ $SIZE -lt 1073741824 ]; then echo "❌ Lỗi: File quá nhỏ, tải thất bại!"; exit 1; fi
-          
           RESPONSE=$(curl -u ":$PD_API_KEY" -T "$FILE" https://pixeldrain.com/api/file)
           ID=$(echo "$RESPONSE" | jq -r '.id')
+          if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
@@ -118,7 +109,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TEXT="<b>🚀 Socrates Mirror Success</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
+          TEXT="<b>🚀 Socrates Mirror Done</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
           curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
 
       - name: Save State
