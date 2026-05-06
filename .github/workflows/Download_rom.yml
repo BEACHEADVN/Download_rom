@@ -1,4 +1,4 @@
-name: Socrates ROM Ultimate Mirror - API Method
+name: Socrates ROM
 
 on:
   workflow_dispatch:
@@ -14,82 +14,69 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          df -h /
+      - name: Pull latest
+        run: git pull origin main || true
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y curl jq aria2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 curl jq
 
-      # ===== BƯỚC 2: LẤY LINK QUA API (KHÔNG QUÉT HTML) =====
-      - name: Get ROM Info via API
+      # ===== GET ROM =====
+      - name: Get Latest ROM
         id: rom
         run: |
-          PROJECT="eliteroms"
-          FOLDER="HyperOS-STABLE-UPDATES/HyperOS-v3.0"
-          
-          # Sử dụng API của SourceForge để lấy danh sách file dưới dạng JSON
-          # API này thường không bị Cloudflare chặn gắt như trang Web
-          API_URL="https://sourceforge.net/projects/$PROJECT/files/$FOLDER/json"
-          RESPONSE=$(curl -sL "$API_URL")
-          
-          # Dùng jq để lọc ra file zip dành cho SOCRATES mới nhất
-          FILE=$(echo "$RESPONSE" | jq -r '.files[].name' | grep 'EliteRomLite_v4.03_SOCRATES' | grep '.zip$' | sort -V | tail -n 1)
-          
-          if [ "$FILE" = "null" ] || [ -z "$FILE" ]; then
-            echo "❌ API không trả về file. Thử dùng RSS dự phòng..."
-            FILE=$(curl -sL "https://sourceforge.net/projects/$PROJECT/rss?path=/$FOLDER" | grep -oP 'EliteRomLite_v4.03_SOCRATES[^ ]*zip' | head -n 1)
-          fi
+          BASE_URL="https://sourceforge.net/projects/xiaomi-eu-multilang-miui-roms/files/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/"
+          HTML=$(curl -sL "$BASE_URL")
 
-          if [ -z "$FILE" ]; then echo "❌ Cạn lời, không tìm thấy file!"; exit 1; fi
-
-          # Tạo link download trực tiếp qua Master Mirror để né Cloudflare
-          # v_as_f=1 giúp chỉ định trả về file thay vì trang chờ
-          DIRECT_URL="https://downloads.sourceforge.net/project/$PROJECT/$FOLDER/$FILE?viasf=1"
+          FILE=$(echo "$HTML" | grep -o 'xiaomi.eu_SOCRATES_OS3[^"]*zip' | sort -V | tail -n 1)
+          URL="https://downloads.sourceforge.net/project/xiaomi-eu-multilang-miui-roms/xiaomi.eu/HyperOS-STABLE-RELEASES/HyperOS3.0/$FILE"
 
           echo "file=$FILE" >> $GITHUB_OUTPUT
-          echo "url=$DIRECT_URL" >> $GITHUB_OUTPUT
-          echo "🚀 Target: $FILE"
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
-      # ===== BƯỚC 3: KIỂM TRA TRẠNG THÁI =====
-      - name: Check State
+      # ===== CHECK STATE + PIXELDRAIN API =====
+      - name: Check Uploaded State
         id: check
         run: |
           FILE="${{ steps.rom.outputs.file }}"
           STATE_FILE="rom_uploaded.txt"
           touch $STATE_FILE
+
+          echo "Checking: $FILE"
+
           if grep -Fq "$FILE|" "$STATE_FILE"; then
             ID=$(grep -F "$FILE|" "$STATE_FILE" | head -n1 | cut -d '|' -f2)
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://pixeldrain.com/api/file/$ID/info")
-            [ "$STATUS" = "200" ] && echo "skip=true" >> $GITHUB_OUTPUT || echo "skip=false" >> $GITHUB_OUTPUT
+
+            echo "Found in state with ID: $ID"
+
+            API="https://pixeldrain.com/api/file/$ID/info"
+            RESPONSE=$(curl -s "$API")
+
+            SUCCESS=$(echo "$RESPONSE" | jq -r '.success')
+
+            if [ "$SUCCESS" = "true" ]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "File vẫn tồn tại trên Pixeldrain → SKIP"
+            else
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "File đã bị xoá → upload lại"
+            fi
           else
             echo "skip=false" >> $GITHUB_OUTPUT
+            echo "File mới → upload"
           fi
 
-      # ===== BƯỚC 4: TẢI ROM (DÙNG CURL VỚI RETRY MẠNH) =====
+      # ===== DOWNLOAD =====
       - name: Download ROM
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "📥 Downloading with Curl (Follow Redirects)..."
-          # -L: Theo dõi redirect đến tận Mirror cuối cùng
-          # --retry: Thử lại nhiều lần nếu gặp 403 tạm thời hoặc mạng lag
-          curl -L --retry 10 --retry-delay 5 \
-            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+          aria2c -x 16 -s 16 -k 1M --continue=true \
             -o "${{ steps.rom.outputs.file }}" \
             "${{ steps.rom.outputs.url }}"
 
-          # Kiểm tra dung lượng (ít nhất 1GB)
-          SIZE=$(stat -c%s "${{ steps.rom.outputs.file }}")
-          if [ $SIZE -lt 1073741824 ]; then
-            echo "❌ File tải về quá nhỏ ($SIZE bytes). Có thể vẫn bị dính HTML!"
-            exit 1
-          fi
-
-      # ===== BƯỚC 5: UPLOAD & TELEGRAM =====
+      # ===== UPLOAD =====
       - name: Upload to Pixeldrain
         if: steps.check.outputs.skip != 'true'
         id: pd
@@ -97,27 +84,55 @@ jobs:
           PD_API_KEY: ${{ secrets.PIXELDRAIN_API_KEY }}
         run: |
           FILE="${{ steps.rom.outputs.file }}"
-          RESPONSE=$(curl -u ":$PD_API_KEY" -T "$FILE" https://pixeldrain.com/api/file)
+
+          RESPONSE=$(curl -u ":$PD_API_KEY" -F "file=@${FILE}" https://pixeldrain.com/api/file)
+
           ID=$(echo "$RESPONSE" | jq -r '.id')
-          if [ "$ID" = "null" ] || [ -z "$ID" ]; then exit 1; fi
+
+          if [ "$ID" = "null" ] || [ -z "$ID" ]; then
+            echo "Upload failed"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
           echo "id=$ID" >> $GITHUB_OUTPUT
           echo "link=https://pixeldrain.com/u/$ID" >> $GITHUB_OUTPUT
 
-      - name: Send Telegram
+      # ===== TELEGRAM =====
+      - name: Send Telegram Notification
         if: steps.check.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          TEXT="<b>🚀 Socrates Mirror Done</b>%0A📦 <code>${{ steps.rom.outputs.file }}</code>%0A🔗 <a href=\"${{ steps.pd.outputs.link }}\">Pixeldrain</a>"
-          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" -d chat_id="${CHAT_ID}" -d text="$TEXT" -d parse_mode="HTML"
+          FILE="${{ steps.rom.outputs.file }}"
+          LINK="${{ steps.pd.outputs.link }}"
 
-      - name: Save State
+          TEXT="<b>🚀 New Socrates ROM Uploaded!</b>%0A%0A📦 File: <code>$FILE</code>%0A🔗 <a href=\"$LINK\">Download</a>"
+
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d chat_id="${CHAT_ID}" \
+            -d text="$TEXT" \
+            -d parse_mode="HTML"
+
+      # ===== SAVE STATE =====
+      - name: Save State and Push
         if: steps.check.outputs.skip != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "${{ steps.rom.outputs.file }}|${{ steps.pd.outputs.id }}" >> rom_uploaded.txt
-          git add rom_uploaded.txt
-          git commit -m "Mirror: ${{ steps.rom.outputs.file }}"
+
+          FILE="${{ steps.rom.outputs.file }}"
+          ID="${{ steps.pd.outputs.id }}"
+          STATE_FILE="rom_uploaded.txt"
+
+          # Xoá entry cũ nếu có
+          sed -i "\|^$FILE|d" "$STATE_FILE"
+
+          echo "$FILE|$ID" >> "$STATE_FILE"
+
+          git add "$STATE_FILE"
+          git commit -m "Update ROM: $FILE" || exit 0
+
+          git pull --rebase origin main
           git push origin main
