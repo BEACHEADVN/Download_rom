@@ -12,9 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # ===== PULL LATEST STATE =====
       - name: Pull latest
         run: git pull origin main || true
 
+      # ===== GET RELEASE INFO (SAFE MODE) =====
       - name: Get Release Info (Safe Mode)
         id: info
         env:
@@ -23,7 +26,7 @@ jobs:
         run: |
             import os, requests, json
             
-            repo = "sidex15/susfs4ksu-module"
+            repo = "rrr333nnn333/BRENE"
             headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
             
             try:
@@ -43,7 +46,7 @@ jobs:
                     dl_url = zip_asset['browser_download_url']
                     size = zip_asset['size']
                 else:
-                    file_name = f"susfs4ksu-{tag}.zip"
+                    file_name = f"BRENE-{tag}.zip"
                     dl_url = f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
                     size = 0
                 
@@ -59,16 +62,23 @@ jobs:
                 print(f"CRITICAL ERROR: {e}")
                 exit(1)
 
+      # ===== CHECK STATE =====
       - name: Check State
         id: check
         run: |
-          touch susfs_state.txt
-          if [ "${{ steps.info.outputs.tag }}" = "$(cat susfs_state.txt)" ]; then echo "skip=true" >> $GITHUB_OUTPUT; fi
+          touch brene_state.txt
+          if [ "${{ steps.info.outputs.tag }}" = "$(cat brene_state.txt)" ]; then 
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
 
+      # ===== DOWNLOAD =====
       - name: Download
         if: steps.check.outputs.skip != 'true'
         run: curl -L -o "${{ steps.info.outputs.file_name }}" "${{ steps.info.outputs.dl_url }}"
 
+      # ===== NOTIFICATION (TELEGRAM LINK) =====
       - name: Send Notification to Telegram
         if: steps.check.outputs.skip != 'true'
         uses: xireiki/channel-post@v1
@@ -76,10 +86,11 @@ jobs:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_USER_ID }}
           context: |
-            <a href="https://github.com/sidex15/susfs4ksu-module">https://github.com/sidex15/susfs4ksu-module</a>
+            https://github.com/rrr333nnn333/BRENE
           parse_mode: HTML
           method: sendMessage
 
+      # ===== UPLOAD FILE TO TELEGRAM =====
       - name: Telegram
         if: steps.check.outputs.skip != 'true'
         env:
@@ -104,18 +115,21 @@ jobs:
           except:
               date_str = "N/A"
 
-          caption = f"<b>🚀 SUSFS Module Update!</b>\n\n📦 Phiên bản: <code>{tag}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
+          caption = f"<b>🚀 BRENE Update!</b>\n\n📦 Phiên bản: <code>{tag}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
           
           with open(file_name, 'rb') as f:
               requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
                             data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
                             files={'document': (file_name, f)})
 
+      # ===== SAVE STATE & SAFE PUSH =====
       - name: Save State
         if: steps.check.outputs.skip != 'true'
         run: |
-          echo "${{ steps.info.outputs.tag }}" > susfs_state.txt
-          git config user.name "actions"
-          git config user.email "actions@github.com"
-          git add susfs_state.txt
-          git commit -m "Update SUSFS to ${{ steps.info.outputs.tag }}" && git push
+          echo "${{ steps.info.outputs.tag }}" > brene_state.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add brene_state.txt
+          git commit -m "Update BRENE to ${{ steps.info.outputs.tag }}" || exit 0
+          git pull --rebase origin main
+          git push origin main
