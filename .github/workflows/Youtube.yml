@@ -47,15 +47,13 @@ jobs:
                 
                 if zip_asset:
                     file_name = zip_asset['name']
-                    dl_url = zip_asset['browser_download_url']
                     size = zip_asset['size']
                 else:
                     file_name = f"revanced-magisk-module-{tag}.zip"
-                    dl_url = f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
                     size = 0
                 
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                    f.write(f"tag={tag}\nfile_name={file_name}\ndl_url={dl_url}\nsize={size}\ndate={date}\nhtml_url={html_url}\n")
+                    f.write(f"tag={tag}\nfile_name={file_name}\nsize={size}\ndate={date}\nhtml_url={html_url}\n")
             except Exception as e:
                 print(f"Error: {e}"); exit(1)
 
@@ -70,78 +68,42 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      # ===== DOWNLOAD =====
-      - name: Download Asset
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          curl -L -o "revanced_temp.zip" "${{ steps.revanced.outputs.dl_url }}"
-
-      # ===== NOTIFICATION (TELEGRAM LINK) =====
+      # ===== NOTIFICATION (TELEGRAM INFO) =====
       - name: Send Notification to Telegram
         if: steps.check.outputs.skip != 'true'
         uses: xireiki/channel-post@v1
-        with:
-          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
-          context: |
-            https://github.com/j-hc/revanced-magisk-module
-          parse_mode: HTML
-          method: sendMessage
-
-      # ===== UPLOAD FILE VIA CURL (HỖ TRỢ FILE LỚN ĐẾN 2GB) =====
-      - name: Upload to Telegram via Curl
-        if: steps.check.outputs.skip != 'true'
         env:
-          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TAG: ${{ steps.revanced.outputs.tag }}
           URL: ${{ steps.revanced.outputs.html_url }}
           SIZE: ${{ steps.revanced.outputs.size }}
           DATE: ${{ steps.revanced.outputs.date }}
           FILE_NAME: ${{ steps.revanced.outputs.file_name }}
-        run: |
-          # 1. Đổi tên file từ tạm sang file gốc tìm được tự động
-          if [ -f "revanced_temp.zip" ]; then
-            mv "revanced_temp.zip" "${{ env.FILE_NAME }}"
-          fi
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          context: |
+            <b>🚀 ReVanced Morphe Module New Update!</b>
 
-          # 2. Xử lý tính dung lượng (Giữ đúng logic cũ của bạn)
-          SIZE_STR=$(python3 -c "
-          b = int('${{ env.SIZE }}')
-          for unit in ['B','KB','MB']:
-              if b < 1024: print(f'{b:.2f} {unit}'); exit()
-              b /= 1024
-          print(f'{b:.2f} MB')
-          ")
+            📦 Tên file: <code>${{ env.FILE_NAME }}</code>
+            📊 Dung lượng: <code>$(python3 -c "
+            b = int('${{ env.SIZE }}')
+            for unit in ['B','KB','MB']:
+                if b < 1024: print(f'{b:.2f} {unit}'); exit()
+                b /= 1024
+            print(f'{b:.2f} MB')
+            ")</code>
+            📅 Cập nhật: <code>$(python3 -c "
+            import datetime
+            try:
+                date_obj = datetime.datetime.strptime('${{ env.DATE }}', '%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=7)
+                print(date_obj.strftime('%d/%m/%Y %H:%M'))
+            except:
+                print('N/A')
+            ")</code>
 
-          # 3. Xử lý ngày tháng giờ VN (Giữ đúng logic cũ của bạn)
-          DATE_STR=$(python3 -c "
-          import datetime
-          try:
-              date_obj = datetime.datetime.strptime('${{ env.DATE }}', '%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=7)
-              print(date_obj.strftime('%d/%m/%Y %H:%M'))
-          except:
-              print('N/A')
-          ")
-
-          # 4. Tạo nội dung caption HTML
-          CAPTION=$(cat <<EOF
-          <b>🚀 ReVanced Morphe Module Update!</b>
-
-          📦 Tên file: <code>${{ env.FILE_NAME }}</code>
-          📊 Dung lượng: <code>$SIZE_STR</code>
-          📅 Cập nhật: <code>$DATE_STR</code>
-
-          <a href='${{ env.URL }}'>🔗 Xem chi tiết trên GitHub</a>
-          EOF
-          )
-
-          # 5. Sử dụng curl hệ thống để đẩy file đi ổn định
-          curl -v -F chat_id="$CHAT_ID" \
-               -F document="@${{ env.FILE_NAME }}" \
-               -F caption="$CAPTION" \
-               -F parse_mode="HTML" \
-               "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
+            <a href="${{ env.URL }}">🔗 Xem chi tiết và tải về trên GitHub</a>
+          parse_mode: HTML
+          method: sendMessage
 
       # ===== SAVE & COMMIT (SAFE PUSH) =====
       - name: Save new state
