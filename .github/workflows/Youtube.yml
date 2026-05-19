@@ -1,0 +1,153 @@
+name: ReVanced Magisk Module
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *" # Chạy vào phút thứ 0 của mỗi giờ
+permissions:
+  contents: write
+
+jobs:
+  check-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ===== PULL STATE =====
+      - name: Pull latest
+        run: git pull origin main || true
+
+      # ===== GET RELEASE INFO (SAFE MODE) =====
+      - name: Get Latest Release
+        id: revanced
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+            import os, requests, json, re
+            repo = "j-hc/revanced-magisk-module"
+            headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
+            try:
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+                data = response.json()
+                tag = data.get('tag_name', '')
+                date = data.get('published_at', data.get('created_at', ''))
+                html_url = data.get('html_url', '')
+                
+                assets = data.get('assets', [])
+                
+                # Biểu thức chính quy để tìm file dạng youtube-morphe-module-v*.zip
+                pattern = re.compile(r"youtube-morphe-module-v.*\.zip$", re.IGNORECASE)
+                
+                # Tìm asset khớp với pattern, nếu không có thì tìm file .zip bất kỳ làm fallback
+                zip_asset = next((a for a in assets if pattern.search(a['name'])), None)
+                if not zip_asset:
+                    zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
+                
+                if zip_asset:
+                    file_name = zip_asset['name']
+                    dl_url = zip_asset['browser_download_url']
+                    size = zip_asset['size']
+                else:
+                    file_name = f"revanced-magisk-module-{tag}.zip"
+                    dl_url = f"https://github.com/{repo}/archive/refs/tags/{tag}.zip"
+                    size = 0
+                
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    f.write(f"tag={tag}\nfile_name={file_name}\ndl_url={dl_url}\nsize={size}\ndate={date}\nhtml_url={html_url}\n")
+            except Exception as e:
+                print(f"Error: {e}"); exit(1)
+
+      # ===== CHECK STATE =====
+      - name: Check State
+        id: check
+        run: |
+          touch revanced_state.txt
+          if [ "${{ steps.revanced.outputs.tag }}" = "$(cat revanced_state.txt)" ]; then 
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else 
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ===== DOWNLOAD =====
+      - name: Download Asset
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          curl -L -o "revanced_temp.zip" "${{ steps.revanced.outputs.dl_url }}"
+
+      # ===== NOTIFICATION (TELEGRAM LINK) =====
+      - name: Send Notification to Telegram
+        if: steps.check.outputs.skip != 'true'
+        uses: xireiki/channel-post@v1
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
+          context: |
+            https://github.com/j-hc/revanced-magisk-module
+          parse_mode: HTML
+          method: sendMessage
+
+      # ===== UPLOAD FILE (PYTHON) =====
+      - name: Upload to Telegram via Python
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TAG: ${{ steps.revanced.outputs.tag }}
+          URL: ${{ steps.revanced.outputs.html_url }}
+          SIZE: ${{ steps.revanced.outputs.size }}
+          DATE: ${{ steps.revanced.outputs.date }}
+          FILE_NAME: ${{ steps.revanced.outputs.file_name }}
+        shell: python
+        run: |
+          import os, requests, datetime
+          
+          def get_size(b):
+              b = int(b)
+              for unit in ['B','KB','MB']:
+                  if b < 1024: return f"{b:.2f} {unit}"
+                  b /= 1024
+              return f"{b:.2f} MB"
+
+          bot_token = os.environ['BOT_TOKEN']
+          chat_id = os.environ['CHAT_ID']
+          tag, url = os.environ['TAG'], os.environ['URL']
+          file_name = os.environ['FILE_NAME']
+          size = get_size(os.environ['SIZE'])
+          
+          # Đổi từ file tạm sang tên file gốc tìm được trên hệ thống tự động
+          old_name = "revanced_temp.zip"
+          if os.path.exists(old_name):
+              os.rename(old_name, file_name)
+          else:
+              file_name = old_name
+          
+          # Xử lý ngày tháng (giờ VN)
+          try:
+              date_obj = datetime.datetime.strptime(os.environ['DATE'], "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+              date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+          except: date_str = "N/A"
+
+          caption = (f"<b>🚀 ReVanced Morphe Module Update!</b>\n\n"
+                     f"📦 Tên file: <code>{file_name}</code>\n"
+                     f"📊 Dung lượng: <code>{size}</code>\n"
+                     f"📅 Cập nhật: <code>{date_str}</code>\n\n"
+                     f"<a href='{url}'>🔗 Xem chi tiết trên GitHub</a>")
+          
+          with open(file_name, 'rb') as f:
+              files = {'document': (file_name, f)}
+              data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}
+              requests.post(f"https://api.telegram.org/bot{bot_token}/sendDocument", data=data, files=files)
+
+      # ===== SAVE & COMMIT (SAFE PUSH) =====
+      - name: Save new state
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "${{ steps.revanced.outputs.tag }}" > revanced_state.txt
+          git add revanced_state.txt
+          git commit -m "Update ReVanced Magisk Module state to ${{ steps.revanced.outputs.tag }}" || exit 0
+          git pull --rebase origin main
+          git push origin main
