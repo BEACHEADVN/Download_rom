@@ -88,8 +88,8 @@ jobs:
           parse_mode: HTML
           method: sendMessage
 
-      # ===== UPLOAD FILE (PYTHON) =====
-      - name: Upload to Telegram via Python
+      # ===== UPLOAD FILE VIA CURL (HỖ TRỢ FILE LỚN ĐẾN 2GB) =====
+      - name: Upload to Telegram via Curl
         if: steps.check.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -99,46 +99,49 @@ jobs:
           SIZE: ${{ steps.revanced.outputs.size }}
           DATE: ${{ steps.revanced.outputs.date }}
           FILE_NAME: ${{ steps.revanced.outputs.file_name }}
-        shell: python
         run: |
-          import os, requests, datetime
-          
-          def get_size(b):
-              b = int(b)
-              for unit in ['B','KB','MB']:
-                  if b < 1024: return f"{b:.2f} {unit}"
-                  b /= 1024
-              return f"{b:.2f} MB"
+          # 1. Đổi tên file từ tạm sang file gốc tìm được tự động
+          if [ -f "revanced_temp.zip" ]; then
+            mv "revanced_temp.zip" "${{ env.FILE_NAME }}"
+          fi
 
-          bot_token = os.environ['BOT_TOKEN']
-          chat_id = os.environ['CHAT_ID']
-          tag, url = os.environ['TAG'], os.environ['URL']
-          file_name = os.environ['FILE_NAME']
-          size = get_size(os.environ['SIZE'])
-          
-          # Đổi từ file tạm sang tên file gốc tìm được trên hệ thống tự động
-          old_name = "revanced_temp.zip"
-          if os.path.exists(old_name):
-              os.rename(old_name, file_name)
-          else:
-              file_name = old_name
-          
-          # Xử lý ngày tháng (giờ VN)
+          # 2. Xử lý tính dung lượng (Giữ đúng logic cũ của bạn)
+          SIZE_STR=$(python3 -c "
+          b = int('${{ env.SIZE }}')
+          for unit in ['B','KB','MB']:
+              if b < 1024: print(f'{b:.2f} {unit}'); exit()
+              b /= 1024
+          print(f'{b:.2f} MB')
+          ")
+
+          # 3. Xử lý ngày tháng giờ VN (Giữ đúng logic cũ của bạn)
+          DATE_STR=$(python3 -c "
+          import datetime
           try:
-              date_obj = datetime.datetime.strptime(os.environ['DATE'], "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
-              date_str = date_obj.strftime("%d/%m/%Y %H:%M")
-          except: date_str = "N/A"
+              date_obj = datetime.datetime.strptime('${{ env.DATE }}', '%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=7)
+              print(date_obj.strftime('%d/%m/%Y %H:%M'))
+          except:
+              print('N/A')
+          ")
 
-          caption = (f"<b>🚀 ReVanced Morphe Module Update!</b>\n\n"
-                     f"📦 Tên file: <code>{file_name}</code>\n"
-                     f"📊 Dung lượng: <code>{size}</code>\n"
-                     f"📅 Cập nhật: <code>{date_str}</code>\n\n"
-                     f"<a href='{url}'>🔗 Xem chi tiết trên GitHub</a>")
-          
-          with open(file_name, 'rb') as f:
-              files = {'document': (file_name, f)}
-              data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'HTML'}
-              requests.post(f"https://api.telegram.org/bot{bot_token}/sendDocument", data=data, files=files)
+          # 4. Tạo nội dung caption HTML
+          CAPTION=$(cat <<EOF
+          <b>🚀 ReVanced Morphe Module Update!</b>
+
+          📦 Tên file: <code>${{ env.FILE_NAME }}</code>
+          📊 Dung lượng: <code>$SIZE_STR</code>
+          📅 Cập nhật: <code>$DATE_STR</code>
+
+          <a href='${{ env.URL }}'>🔗 Xem chi tiết trên GitHub</a>
+          EOF
+          )
+
+          # 5. Sử dụng curl hệ thống để đẩy file đi ổn định
+          curl -v -F chat_id="$CHAT_ID" \
+               -F document="@${{ env.FILE_NAME }}" \
+               -F caption="$CAPTION" \
+               -F parse_mode="HTML" \
+               "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument"
 
       # ===== SAVE & COMMIT (SAFE PUSH) =====
       - name: Save new state
