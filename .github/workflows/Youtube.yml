@@ -36,11 +36,8 @@ jobs:
                 html_url = data.get('html_url', '')
                 
                 assets = data.get('assets', [])
-                
-                # Biểu thức chính quy để tìm file dạng youtube-morphe-module-v*.zip
                 pattern = re.compile(r"youtube-morphe-module-v.*\.zip$", re.IGNORECASE)
                 
-                # Tìm asset khớp với pattern, nếu không có thì tìm file .zip bất kỳ làm fallback
                 zip_asset = next((a for a in assets if pattern.search(a['name'])), None)
                 if not zip_asset:
                     zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
@@ -68,40 +65,47 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
+      # ===== PARSE DATA TO ENV (XỬ LÝ ĐĂNG KÝ BIẾN SẠCH) =====
+      - name: Parse Data to Env
+        if: steps.check.outputs.skip != 'true'
+        id: parse
+        run: |
+          # Tính dung lượng file
+          SIZE_STR=$(python3 -c "
+          b = int('${{ steps.revanced.outputs.size }}')
+          for unit in ['B','KB','MB']:
+              if b < 1024: print(f'{b:.2f} {unit}'); exit()
+              b /= 1024
+          print(f'{b:.2f} MB')
+          ")
+          echo "FORMATED_SIZE=$SIZE_STR" >> $GITHUB_ENV
+
+          # Tính ngày tháng múi giờ VN
+          DATE_STR=$(python3 -c "
+          import datetime
+          try:
+              date_obj = datetime.datetime.strptime('${{ steps.revanced.outputs.date }}', '%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=7)
+              print(date_obj.strftime('%d/%m/%Y %H:%M'))
+          except:
+              print('N/A')
+          ")
+          echo "FORMATED_DATE=$DATE_STR" >> $GITHUB_ENV
+
       # ===== NOTIFICATION (TELEGRAM INFO) =====
       - name: Send Notification to Telegram
         if: steps.check.outputs.skip != 'true'
         uses: xireiki/channel-post@v1
-        env:
-          TAG: ${{ steps.revanced.outputs.tag }}
-          URL: ${{ steps.revanced.outputs.html_url }}
-          SIZE: ${{ steps.revanced.outputs.size }}
-          DATE: ${{ steps.revanced.outputs.date }}
-          FILE_NAME: ${{ steps.revanced.outputs.file_name }}
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           context: |
             <b>🚀 ReVanced Morphe Module New Update!</b>
 
-            📦 Tên file: <code>${{ env.FILE_NAME }}</code>
-            📊 Dung lượng: <code>$(python3 -c "
-            b = int('${{ env.SIZE }}')
-            for unit in ['B','KB','MB']:
-                if b < 1024: print(f'{b:.2f} {unit}'); exit()
-                b /= 1024
-            print(f'{b:.2f} MB')
-            ")</code>
-            📅 Cập nhật: <code>$(python3 -c "
-            import datetime
-            try:
-                date_obj = datetime.datetime.strptime('${{ env.DATE }}', '%Y-%m-%dT%H:%M:%SZ') + datetime.timedelta(hours=7)
-                print(date_obj.strftime('%d/%m/%Y %H:%M'))
-            except:
-                print('N/A')
-            ")</code>
+            📦 Tên file: <code>${{ steps.revanced.outputs.file_name }}</code>
+            📊 Dung lượng: <code>${{ env.FORMATED_SIZE }}</code>
+            📅 Cập nhật: <code>${{ env.FORMATED_DATE }}</code>
 
-            <a href="${{ env.URL }}">🔗 Xem chi tiết và tải về trên GitHub</a>
+            <a href="${{ steps.revanced.outputs.html_url }}">🔗 Xem chi tiết và tải về trên GitHub</a>
           parse_mode: HTML
           method: sendMessage
 
