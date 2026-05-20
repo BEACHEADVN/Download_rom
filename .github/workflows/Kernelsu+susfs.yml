@@ -1,4 +1,4 @@
-name: GKI KernelSU SUSFS
+name: GKI KernelSU SUSFS Check
 
 on:
   workflow_dispatch:
@@ -31,57 +31,56 @@ jobs:
             target_kernels = ["5.15.167-android13", "5.15.170-android13", "5.15.189-android13", "6.12.23-android16"]
             
             try:
-                # Chỉ lấy đúng 1 bản Release mới nhất trên cùng
+                # Lấy bản Release mới nhất trên cùng
                 response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
                 release = response.json()
                 
-                tag_name = release.get('tag_name', '')
+                tag_name = release.get('tag_name', '').strip()
                 published_date = release.get('published_at', release.get('created_at', ''))
                 assets = release.get('assets', [])
                 
-                found_data = {}
-                # Chỉ tìm kiếm các file asset nằm trong bản Release mới nhất này
+                # Đọc Tag cũ từ file trạng thái kernelsu+susfs.txt
+                state_file = "kernelsu+susfs.txt"
+                old_tag = ""
+                if os.path.exists(state_file):
+                    with open(state_file, 'r') as sf:
+                        old_tag = sf.read().strip()
+                
+                # Nếu Tag trên GitHub trùng với Tag đã lưu -> Bỏ qua, không cần quét tiếp
+                if old_tag == tag_name:
+                    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                        f.write("skip=true\n")
+                    print(f"No new release. Current release {tag_name} has already been processed.")
+                    exit(0)
+                
+                updates_to_process = []
+                # Chỉ lọc tìm các file asset thuộc 4 bản kernel mục tiêu trong Release mới này
                 for asset in assets:
                     asset_name = asset.get('name', '')
                     for k_ver in target_kernels:
                         if k_ver in asset_name and asset_name.endswith('.zip'):
-                            found_data[k_ver] = {
+                            updates_to_process.append({
+                                "ver_key": k_ver,
                                 "tag": tag_name,
                                 "file_name": asset_name,
                                 "dl_url": asset.get('browser_download_url', ''),
                                 "size": asset.get('size', 0),
                                 "date": published_date
-                            }
+                            })
                 
-                # Đọc trạng thái cũ từ file kernelsu+susfs.txt
-                state_file = "kernelsu+susfs.txt"
-                old_states = {}
-                if os.path.exists(state_file):
-                    with open(state_file, 'r') as sf:
-                        for line in sf:
-                            if '=' in line:
-                                k, v = line.strip().split('=', 1)
-                                old_states[k] = v
-                
-                # Chỉ lọc ra những file chưa từng được tải lên (tên file khác với state cũ)
-                updates_to_process = []
-                for k_ver, item in found_data.items():
-                    if old_states.get(k_ver) != item["file_name"]:
-                        item["ver_key"] = k_ver
-                        updates_to_process.append(item)
-                
-                # Lưu danh sách file cần xử lý vào file JSON tạm
+                # Lưu danh sách file tìm được vào file JSON tạm
                 with open("targets.json", "w") as f:
                     json.dump(updates_to_process, f)
                 
-                # Đặt trạng thái skip cho GitHub Action
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                     if updates_to_process:
                         f.write("skip=false\n")
-                        print(f"Found {len(updates_to_process)} new asset(s) in latest release ({tag_name}) to process.")
+                        f.write(f"new_tag={tag_name}\n")
+                        print(f"Found new release {tag_name} with {len(updates_to_process)} matching asset(s).")
                     else:
+                        # Trường hợp có release mới nhưng không chứa file kernel nào ta cần thì cũng bỏ qua
                         f.write("skip=true\n")
-                        print(f"No new matching assets found in the latest release ({tag_name}).")
+                        print(f"New release {tag_name} found, but contains no matching kernel assets.")
                         
             except Exception as e:
                 print(f"CRITICAL ERROR: {e}")
@@ -107,8 +106,6 @@ jobs:
           with open("targets.json", "r") as f:
               updates = json.load(f)
 
-          state_updates = {}
-
           for item in updates:
               ver_key = item["ver_key"]
               file_name = item["file_name"]
@@ -119,7 +116,7 @@ jobs:
 
               print(f"Downloading: {file_name}")
 
-              # 1. Tải file bằng curl hệ thống
+              # 1. Tải file về
               subprocess.run(["curl", "-L", "-o", file_name, dl_url], check=True)
 
               # 2. Gửi link gốc repo về Telegram User ID
@@ -134,7 +131,7 @@ jobs:
               except:
                   date_str = "N/A"
 
-              # 4. Đẩy file kèm caption chi tiết lên Telegram Chat ID (Kênh/Nhóm)
+              # 4. Đẩy file kèm caption chi tiết lên Telegram Chat ID
               caption = f"<b>🚀 GKI SUSFS Update ({ver_key})!</b>\n\n📦 Release: <code>{tag}</code>\n📂 File: <code>{file_name}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
               
               with open(file_name, 'rb') as doc_file:
@@ -142,36 +139,16 @@ jobs:
                                 data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
                                 files={'document': (file_name, doc_file)})
 
-              state_updates[ver_key] = file_name
-
-          # Xuất dữ liệu cập nhật trạng thái ra file tạm
-          with open("state_updates.json", "w") as f:
-              json.dump(state_updates, f)
-
       # ===== SAVE STATE & SAFE PUSH =====
       - name: Save State
         if: steps.info.outputs.skip != 'true'
         run: |
-          touch kernelsu+susfs.txt
-          python3 -c "
-          import os, json
-          lines = {}
-          if os.path.exists('kernelsu+susfs.txt'):
-              for l in open('kernelsu+susfs.txt'):
-                  if '=' in l: k, v = l.strip().split('=', 1); lines[k] = v
-          
-          with open('state_updates.json', 'r') as f:
-              new_updates = json.load(f)
-              
-          lines.update(new_updates)
-          
-          with open('kernelsu+susfs.txt', 'w') as f:
-              for k, v in lines.items(): f.write(f'{k}={v}\n')
-          "
+          # Ghi đè duy nhất tên mã Release mới nhất vào file trạng thái
+          echo "${{ steps.info.outputs.new_tag }}" > kernelsu+susfs.txt
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add kernelsu+susfs.txt
-          git commit -m "Update matching GKI Kernel assets from latest release" || exit 0
+          git commit -m "Update GKI Kernel release state to ${{ steps.info.outputs.new_tag }}" || exit 0
           git pull --rebase origin main
           git push origin main
