@@ -1,4 +1,1 @@
-5.15.167-android13=5.15.167-android13-2024-11-AnyKernel3.zip
-5.15.170-android13=5.15.170-android13-2025-01-AnyKernel3.zip
-5.15.189-android13=5.15.189-android13-2025-09-AnyKernel3.zip
-6.12.23-android16=6.12.23-android16-2025-06-AnyKernel3.zip
+v2.0.0-r20
