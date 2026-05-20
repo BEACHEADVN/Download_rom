@@ -17,63 +17,43 @@ jobs:
       - name: Pull latest
         run: git pull origin main || true
 
-      # ===== GET RELEASE INFO FOR MULTIPLE KERNELS =====
+      # ===== GET INFO FROM LATEST RELEASE ONLY =====
       - name: Get Release Info
         id: info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: python
         run: |
-            import os, requests, json, re
+            import os, requests, json
 
             repo = "WildKernels/GKI_KernelSU_SUSFS"
             headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
-            
-            # Cấu hình các phiên bản đích cần tìm kiếm chính xác
-            target_versions = ["5.15.167", "5.15.170", "5.15.189"]
-            target_os = "android13"
+            target_kernels = ["5.15.167-android13", "5.15.170-android13", "5.15.189-android13"]
             
             try:
-                # Lấy danh sách các bản phát hành gần đây
-                response = requests.get(f"https://api.github.com/repos/{repo}/releases", headers=headers)
-                releases = response.json()
+                # Chỉ lấy đúng 1 bản Release mới nhất trên cùng
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+                release = response.json()
+                
+                tag_name = release.get('tag_name', '')
+                published_date = release.get('published_at', release.get('created_at', ''))
+                assets = release.get('assets', [])
                 
                 found_data = {}
-                
-                # Quét qua danh sách release để bắt đúng các bản phối hợp yêu cầu
-                for r in releases:
-                    tag_name = r.get('tag_name', '')
-                    
-                    for v in target_versions:
-                        # Nếu phiên bản đó đã tìm thấy ở release mới hơn rồi thì bỏ qua
-                        if v in found_data:
-                            continue
-                            
-                        # Kiểm tra xem tag hoặc tiêu đề có chứa dạng mong muốn hay không (ví dụ: 5.15.167-android13)
-                        match_pattern = f"{v}-{target_os}"
-                        if match_pattern in tag_name or match_pattern in r.get('name', ''):
-                            assets = r.get('assets', [])
-                            # Ưu tiên tìm file zip chứa trong release
-                            zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
-                            
-                            if zip_asset:
-                                file_name = zip_asset['name']
-                                dl_url = zip_asset['browser_download_url']
-                                size = zip_asset['size']
-                            else:
-                                file_name = f"GKI-{tag_name}.zip"
-                                dl_url = f"https://github.com/{repo}/archive/refs/tags/{tag_name}.zip"
-                                size = 0
-                                
-                            found_data[v] = {
+                # Chỉ tìm kiếm các file asset nằm trong bản Release mới nhất này
+                for asset in assets:
+                    asset_name = asset.get('name', '')
+                    for k_ver in target_kernels:
+                        if k_ver in asset_name and asset_name.endswith('.zip'):
+                            found_data[k_ver] = {
                                 "tag": tag_name,
-                                "file_name": file_name,
-                                "dl_url": dl_url,
-                                "size": size,
-                                "date": r.get('published_at', r.get('created_at', ''))
+                                "file_name": asset_name,
+                                "dl_url": asset.get('browser_download_url', ''),
+                                "size": asset.get('size', 0),
+                                "date": published_date
                             }
                 
-                # Đọc trạng thái cũ để so sánh
+                # Đọc trạng thái cũ từ file
                 state_file = "brene_state.txt"
                 old_states = {}
                 if os.path.exists(state_file):
@@ -83,98 +63,108 @@ jobs:
                                 k, v = line.strip().split('=', 1)
                                 old_states[k] = v
                 
-                # Kiểm tra xem có phiên bản nào mới hơn trạng thái đã lưu không
-                update_v = None
-                for v in target_versions:
-                    if v in found_data:
-                        current_tag = found_data[v]["tag"]
-                        if old_states.get(v) != current_tag:
-                            # Tìm thấy bản cập nhật mới nhất (chọn bản này để xử lý và đẩy thông báo)
-                            update_v = v
-                            break
+                # Chỉ lọc ra những file chưa từng được tải lên (tên file khác với state cũ)
+                updates_to_process = []
+                for k_ver, item in found_data.items():
+                    if old_states.get(k_ver) != item["file_name"]:
+                        item["ver_key"] = k_ver
+                        updates_to_process.append(item)
                 
+                # Lưu danh sách file cần xử lý vào file JSON tạm
+                with open("targets.json", "w") as f:
+                    json.dump(updates_to_process, f)
+                
+                # Đặt trạng thái skip cho GitHub Action
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                    if update_v:
-                        res = found_data[update_v]
-                        f.write(f"skip=false\n")
-                        f.write(f"ver_key={update_v}\n")
-                        f.write(f"tag={res['tag']}\n")
-                        f.write(f"file_name={res['file_name']}\n")
-                        f.write(f"dl_url={res['dl_url']}\n")
-                        f.write(f"size={res['size']}\n")
-                        f.write(f"date={res['date']}\n")
-                        print(f"Found new update for version: {update_v} (Tag: {res['tag']})")
+                    if updates_to_process:
+                        f.write("skip=false\n")
+                        print(f"Found {len(updates_to_process)} new asset(s) in latest release ({tag_name}) to process.")
                     else:
                         f.write("skip=true\n")
-                        print("No new updates found for any target versions.")
+                        print(f"No new matching assets found in the latest release ({tag_name}).")
                         
             except Exception as e:
                 print(f"CRITICAL ERROR: {e}")
                 exit(1)
 
-      # ===== DOWNLOAD =====
-      - name: Download
-        if: steps.info.outputs.skip != 'true'
-        run: curl -L -o "${{ steps.info.outputs.file_name }}" "${{ steps.info.outputs.dl_url }}"
-
-      # ===== NOTIFICATION (TELEGRAM LINK) =====
-      - name: Send Notification to Telegram
-        if: steps.info.outputs.skip != 'true'
-        uses: xireiki/channel-post@v1
-        with:
-          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat_id: ${{ secrets.TELEGRAM_USER_ID }}
-          context: |
-            https://github.com/WildKernels/GKI_KernelSU_SUSFS
-          parse_mode: HTML
-          method: sendMessage
-
-      # ===== UPLOAD FILE TO TELEGRAM =====
-      - name: Telegram Upload
+      # ===== DOWNLOAD & NOTIFY & UPLOAD =====
+      - name: Process Updates and Upload
         if: steps.info.outputs.skip != 'true'
         env:
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         shell: python
         run: |
-          import os, requests, datetime
+          import os, requests, json, datetime, subprocess
+
           def get_size(b):
               b = int(b)
               for unit in ['B','KB','MB']:
                   if b < 1024: return f"{b:.2f} {unit}"
                   b /= 1024
-          
-          tag, file_name = "${{ steps.info.outputs.tag }}", "${{ steps.info.outputs.file_name }}"
-          size = get_size("${{ steps.info.outputs.size }}")
-          date_raw = "${{ steps.info.outputs.date }}"
-          ver_key = "${{ steps.info.outputs.ver_key }}"
-          
-          try:
-              date_obj = datetime.datetime.strptime(date_raw, "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
-              date_str = date_obj.strftime("%d/%m/%Y %H:%M")
-          except:
-              date_str = "N/A"
 
-          caption = f"<b>🚀 GKI SUSFS Update ({ver_key})!</b>\n\n📦 Phiên bản: <code>{tag}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
-          
-          with open(file_name, 'rb') as f:
-              requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
-                            data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
-                            files={'document': (file_name, f)})
+          with open("targets.json", "r") as f:
+              updates = json.load(f)
+
+          state_updates = {}
+
+          for item in updates:
+              ver_key = item["ver_key"]
+              file_name = item["file_name"]
+              dl_url = item["dl_url"]
+              tag = item["tag"]
+              size = get_size(item["size"])
+              date_raw = item["date"]
+
+              print(f"Downloading: {file_name}")
+
+              # 1. Tải file bằng curl hệ thống
+              subprocess.run(["curl", "-L", "-o", file_name, dl_url], check=True)
+
+              # 2. Gửi link gốc repo về Telegram User ID
+              source_text = "https://github.com/WildKernels/GKI_KernelSU_SUSFS"
+              requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
+                            data={'chat_id': os.environ['USER_ID'], 'text': source_text, 'parse_mode': 'HTML'})
+
+              # 3. Định dạng thời gian sang múi giờ VN (+7)
+              try:
+                  date_obj = datetime.datetime.strptime(date_raw, "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+                  date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+              except:
+                  date_str = "N/A"
+
+              # 4. Đẩy file kèm caption chi tiết lên Telegram Chat ID (Kênh/Nhóm)
+              caption = f"<b>🚀 GKI SUSFS Update ({ver_key})!</b>\n\n📦 Release: <code>{tag}</code>\n📂 File: <code>{file_name}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
+              
+              with open(file_name, 'rb') as doc_file:
+                  requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
+                                data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
+                                files={'document': (file_name, doc_file)})
+
+              state_updates[ver_key] = file_name
+
+          # Xuất dữ liệu cập nhật trạng thái ra file tạm
+          with open("state_updates.json", "w") as f:
+              json.dump(state_updates, f)
 
       # ===== SAVE STATE & SAFE PUSH =====
       - name: Save State
         if: steps.info.outputs.skip != 'true'
         run: |
-          # Đọc file hiện tại tạo dict
           touch brene_state.txt
           python3 -c "
-          import os
+          import os, json
           lines = {}
           if os.path.exists('brene_state.txt'):
               for l in open('brene_state.txt'):
                   if '=' in l: k, v = l.strip().split('=', 1); lines[k] = v
-          lines['${{ steps.info.outputs.ver_key }}'] = '${{ steps.info.outputs.tag }}'
+          
+          with open('state_updates.json', 'r') as f:
+              new_updates = json.load(f)
+              
+          lines.update(new_updates)
+          
           with open('brene_state.txt', 'w') as f:
               for k, v in lines.items(): f.write(f'{k}={v}\n')
           "
@@ -182,6 +172,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add brene_state.txt
-          git commit -m "Update GKI Kernel ${{ steps.info.outputs.ver_key }} to ${{ steps.info.outputs.tag }}" || exit 0
+          git commit -m "Update matching GKI Kernel assets from latest release" || exit 0
           git pull --rebase origin main
           git push origin main
