@@ -1,0 +1,170 @@
+name: OnePlus KernelSU SUSFS
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 * * * *" # Chạy vào phút thứ 10 của mỗi giờ để lệch giờ với script GKI
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ===== PULL LATEST STATE =====
+      - name: Pull latest
+        run: git pull origin main || true
+
+      # ===== GET INFO FROM LATEST RELEASE ONLY =====
+      - name: Get Release Info
+        id: info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: python
+        run: |
+            import os, requests, json
+
+            repo = "WildKernels/OnePlus_KernelSU_SUSFS"
+            headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
+            target_keyword = "AK3_OP15_OOS"
+            
+            try:
+                # Lấy bản Release mới nhất trên cùng
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
+                release = response.json()
+                
+                tag_name = release.get('tag_name', '').strip()
+                published_date = release.get('published_at', release.get('created_at', ''))
+                assets = release.get('assets', [])
+                
+                # Đọc Tag cũ từ dòng đầu tiên của file trạng thái oneplus+susfs.txt nếu có
+                state_file = "oneplus+susfs.txt"
+                old_tag = ""
+                if os.path.exists(state_file):
+                    with open(state_file, 'r') as sf:
+                        first_line = sf.readline().strip()
+                        if first_line.startswith("Release:"):
+                            old_tag = first_line.replace("Release:", "").strip()
+                
+                # Nếu Tag trên GitHub trùng với Tag đã lưu -> Bỏ qua
+                if old_tag == tag_name:
+                    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                        f.write("skip=true\n")
+                    print(f"No new release. Current release {tag_name} has already been processed.")
+                    exit(0)
+                
+                updates_to_process = []
+                # Lọc tìm các file asset chứa chuỗi AK3_OP15_OOS và là file zip
+                for asset in assets:
+                    asset_name = asset.get('name', '')
+                    if target_keyword in asset_name and asset_name.endswith('.zip'):
+                        updates_to_process.append({
+                            "ver_key": target_keyword,
+                            "tag": tag_name,
+                            "file_name": asset_name,
+                            "dl_url": asset.get('browser_download_url', ''),
+                            "size": asset.get('size', 0),
+                            "date": published_date
+                        })
+                
+                with open("oneplus_targets.json", "w") as f:
+                    json.dump(updates_to_process, f)
+                
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                    if updates_to_process:
+                        f.write("skip=false\n")
+                        f.write(f"new_tag={tag_name}\n")
+                        print(f"Found new release {tag_name} with {len(updates_to_process)} matching OnePlus asset(s).")
+                    else:
+                        f.write("skip=true\n")
+                        print(f"New release {tag_name} found, but contains no assets matching {target_keyword}.")
+                        
+            except Exception as e:
+                print(f"CRITICAL ERROR: {e}")
+                exit(1)
+
+      # ===== DOWNLOAD & NOTIFY & UPLOAD =====
+      - name: Process Updates and Upload
+        if: steps.info.outputs.skip != 'true'
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          USER_ID: ${{ secrets.TELEGRAM_USER_ID }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        shell: python
+        run: |
+          import os, requests, json, datetime, subprocess
+
+          def get_size(b):
+              b = int(b)
+              for unit in ['B','KB','MB']:
+                  if b < 1024: return f"{b:.2f} {unit}"
+                  b /= 1024
+
+          with open("oneplus_targets.json", "r") as f:
+              updates = json.load(f)
+
+          txt_records = []
+
+          for item in updates:
+              ver_key = item["ver_key"]
+              file_name = item["file_name"]
+              dl_url = item["dl_url"]
+              tag = item["tag"]
+              size = get_size(item["size"])
+              date_raw = item["date"]
+
+              print(f"Downloading: {file_name}")
+
+              # 1. Tải file về
+              subprocess.run(["curl", "-L", "-o", file_name, dl_url], check=True)
+
+              # 2. Gửi link gốc repo OnePlus về Telegram User ID
+              source_text = "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS"
+              requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
+                            data={'chat_id': os.environ['USER_ID'], 'text': source_text, 'parse_mode': 'HTML'})
+
+              # 3. Định dạng thời gian sang múi giờ VN (+7)
+              try:
+                  date_obj = datetime.datetime.strptime(date_raw, "%Y-%m-%dT%H:%M:%SZ") + datetime.timedelta(hours=7)
+                  date_str = date_obj.strftime("%d/%m/%Y %H:%M")
+              except:
+                  date_str = "N/A"
+
+              # 4. Đẩy file kèm caption chi tiết lên Telegram Chat ID
+              caption = f"<b>🚀 OnePlus SUSFS Update!</b>\n\n📦 Release: <code>{tag}</code>\n📂 File: <code>{file_name}</code>\n📊 Dung lượng: <code>{size}</code>\n📅 Cập nhật: <code>{date_str}</code>"
+              
+              with open(file_name, 'rb') as doc_file:
+                  requests.post(f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendDocument", 
+                                data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
+                                files={'document': (file_name, doc_file)})
+
+              # Gom thông tin định dạng để ghi vào file txt
+              txt_records.append(f"{file_name}\nDung lượng: {size}\nCập nhật: {date_str}")
+
+          # Lưu danh sách text record ra file tạm
+          with open("oneplus_payload.json", "w") as f:
+              json.dump(txt_records, f)
+
+      # ===== SAVE STATE & SAFE PUSH =====
+      - name: Save State
+        if: steps.info.outputs.skip != 'true'
+        run: |
+          python3 -c "
+          import json
+          with open('oneplus_payload.json', 'r') as f:
+              records = json.load(f)
+          
+          # Ghi đè cấu trúc mới vào oneplus+susfs.txt
+          with open('oneplus+susfs.txt', 'w') as f:
+              f.write('Release: ${{ steps.info.outputs.new_tag }}\n')
+              f.write('\n'.join(records) + '\n')
+          "
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add oneplus+susfs.txt
+          git commit -m "Update OnePlus Kernel assets info to ${{ steps.info.outputs.new_tag }}" || exit 0
+          git pull --rebase origin main
+          git push origin main
