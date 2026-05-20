@@ -54,7 +54,7 @@ jobs:
                             }
                 
                 # Đọc trạng thái cũ từ file
-                state_file = "brene_state.txt"
+                state_file = "kernelsu+susfs_state.txt"
                 old_states = {}
                 if os.path.exists(state_file):
                     with open(state_file, 'r') as sf:
