@@ -1,4 +1,4 @@
-name: GKI KernelSU SUSFS Check
+name: GKI KernelSU SUSFS
 
 on:
   workflow_dispatch:
@@ -39,14 +39,16 @@ jobs:
                 published_date = release.get('published_at', release.get('created_at', ''))
                 assets = release.get('assets', [])
                 
-                # Đọc Tag cũ từ file trạng thái kernelsu+susfs.txt
+                # Đọc Tag cũ từ dòng đầu tiên của file trạng thái kernelsu+susfs.txt nếu có
                 state_file = "kernelsu+susfs.txt"
                 old_tag = ""
                 if os.path.exists(state_file):
                     with open(state_file, 'r') as sf:
-                        old_tag = sf.read().strip()
+                        first_line = sf.readline().strip()
+                        if first_line.startswith("Release:"):
+                            old_tag = first_line.replace("Release:", "").strip()
                 
-                # Nếu Tag trên GitHub trùng với Tag đã lưu -> Bỏ qua, không cần quét tiếp
+                # Nếu Tag trên GitHub trùng với Tag đã lưu -> Bỏ qua
                 if old_tag == tag_name:
                     with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                         f.write("skip=true\n")
@@ -54,7 +56,7 @@ jobs:
                     exit(0)
                 
                 updates_to_process = []
-                # Chỉ lọc tìm các file asset thuộc 4 bản kernel mục tiêu trong Release mới này
+                # Chỉ lọc tìm các file asset thuộc 4 bản kernel mục tiêu
                 for asset in assets:
                     asset_name = asset.get('name', '')
                     for k_ver in target_kernels:
@@ -68,7 +70,6 @@ jobs:
                                 "date": published_date
                             })
                 
-                # Lưu danh sách file tìm được vào file JSON tạm
                 with open("targets.json", "w") as f:
                     json.dump(updates_to_process, f)
                 
@@ -78,7 +79,6 @@ jobs:
                         f.write(f"new_tag={tag_name}\n")
                         print(f"Found new release {tag_name} with {len(updates_to_process)} matching asset(s).")
                     else:
-                        # Trường hợp có release mới nhưng không chứa file kernel nào ta cần thì cũng bỏ qua
                         f.write("skip=true\n")
                         print(f"New release {tag_name} found, but contains no matching kernel assets.")
                         
@@ -105,6 +105,8 @@ jobs:
 
           with open("targets.json", "r") as f:
               updates = json.load(f)
+
+          txt_records = []
 
           for item in updates:
               ver_key = item["ver_key"]
@@ -139,16 +141,31 @@ jobs:
                                 data={'chat_id': os.environ['CHAT_ID'], 'caption': caption, 'parse_mode': 'HTML'}, 
                                 files={'document': (file_name, doc_file)})
 
+              # Gom thông tin định dạng để ghi vào file txt sau này
+              txt_records.append(f"{file_name}\nDung lượng: {size}\nCập nhật: {date_str}")
+
+          # Lưu danh sách text record ra file tạm để bước sau xử lý ghi đè
+          with open("text_payload.json", "w") as f:
+              json.dump(txt_records, f)
+
       # ===== SAVE STATE & SAFE PUSH =====
       - name: Save State
         if: steps.info.outputs.skip != 'true'
         run: |
-          # Ghi đè duy nhất tên mã Release mới nhất vào file trạng thái
-          echo "${{ steps.info.outputs.new_tag }}" > kernelsu+susfs.txt
+          python3 -c "
+          import json
+          with open('text_payload.json', 'r') as f:
+              records = json.load(f)
+          
+          # Ghi đè cấu trúc mới vào kernelsu+susfs.txt
+          with open('kernelsu+susfs.txt', 'w') as f:
+              f.write('Release: ${{ steps.info.outputs.new_tag }}\n')
+              f.write('\n'.join(records) + '\n')
+          "
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add kernelsu+susfs.txt
-          git commit -m "Update GKI Kernel release state to ${{ steps.info.outputs.new_tag }}" || exit 0
+          git commit -m "Update GKI Kernel assets info to ${{ steps.info.outputs.new_tag }}" || exit 0
           git pull --rebase origin main
           git push origin main
