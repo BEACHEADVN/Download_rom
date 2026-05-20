@@ -18,7 +18,7 @@ jobs:
       - name: Pull latest
         run: git pull origin main || true
 
-      # ===== GET RELEASE INFO (SAFE MODE) =====
+      # ===== GET RELEASE INFO (EXACT YOUTUBE MORPHE) =====
       - name: Get Latest Release
         id: revanced
         env:
@@ -28,26 +28,37 @@ jobs:
             import os, requests, json, re
             repo = "j-hc/revanced-magisk-module"
             headers = {"Authorization": f"token {os.environ['GH_TOKEN']}"}
+            
             try:
-                response = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", headers=headers)
-                data = response.json()
-                tag = data.get('tag_name', '')
-                date = data.get('published_at', data.get('created_at', ''))
-                html_url = data.get('html_url', '')
+                # Gọi API lấy danh sách các bản phát hành gần đây thay vì chỉ lấy bản mới nhất chung chung
+                response = requests.get(f"https://api.github.com/repos/{repo}/releases", headers=headers)
+                releases = response.json()
                 
-                assets = data.get('assets', [])
                 pattern = re.compile(r"youtube-morphe-module-v.*\.zip$", re.IGNORECASE)
                 
-                zip_asset = next((a for a in assets if pattern.search(a['name'])), None)
-                if not zip_asset:
-                    zip_asset = next((a for a in assets if a['name'].endswith('.zip')), None)
+                target_release = None
+                target_asset = None
                 
-                if zip_asset:
-                    file_name = zip_asset['name']
-                    size = zip_asset['size']
+                # Duyệt qua các bản release để tìm đúng bản chứa asset youtube-morphe
+                for r in releases:
+                    assets = r.get('assets', [])
+                    zip_asset = next((a for a in assets if pattern.search(a['name'])), None)
+                    if zip_asset:
+                        target_release = r
+                        target_asset = zip_asset
+                        break
+                
+                # Nếu tìm thấy bản phát hành chứa Youtube Morphe
+                if target_release and target_asset:
+                    tag = target_release.get('tag_name', '')
+                    date = target_release.get('published_at', target_release.get('created_at', ''))
+                    html_url = target_release.get('html_url', '')
+                    file_name = target_asset['name']
+                    size = target_asset['size']
                 else:
-                    file_name = f"revanced-magisk-module-{tag}.zip"
-                    size = 0
+                    # Fallback phòng hờ trường hợp không quét ra cấu trúc mong muốn
+                    print("Warning: YouTube Morphe asset not found in recent releases. Using fallback.")
+                    exit(1)
                 
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
                     f.write(f"tag={tag}\nfile_name={file_name}\nsize={size}\ndate={date}\nhtml_url={html_url}\n")
