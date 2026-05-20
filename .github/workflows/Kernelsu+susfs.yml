@@ -1,4 +1,4 @@
-name: GKI KernelSU SUSFS Check
+name: GKI KernelSU SUSFS
 
 on:
   workflow_dispatch:
@@ -53,8 +53,8 @@ jobs:
                                 "date": published_date
                             }
                 
-                # Đọc trạng thái cũ từ file
-                state_file = "kernelsu+susfs_state.txt"
+                # Đọc trạng thái cũ từ file kernelsu+susfs.txt
+                state_file = "kernelsu+susfs.txt"
                 old_states = {}
                 if os.path.exists(state_file):
                     with open(state_file, 'r') as sf:
@@ -152,12 +152,12 @@ jobs:
       - name: Save State
         if: steps.info.outputs.skip != 'true'
         run: |
-          touch brene_state.txt
+          touch kernelsu+susfs.txt
           python3 -c "
           import os, json
           lines = {}
-          if os.path.exists('brene_state.txt'):
-              for l in open('brene_state.txt'):
+          if os.path.exists('kernelsu+susfs.txt'):
+              for l in open('kernelsu+susfs.txt'):
                   if '=' in l: k, v = l.strip().split('=', 1); lines[k] = v
           
           with open('state_updates.json', 'r') as f:
@@ -165,13 +165,13 @@ jobs:
               
           lines.update(new_updates)
           
-          with open('brene_state.txt', 'w') as f:
+          with open('kernelsu+susfs.txt', 'w') as f:
               for k, v in lines.items(): f.write(f'{k}={v}\n')
           "
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add brene_state.txt
+          git add kernelsu+susfs.txt
           git commit -m "Update matching GKI Kernel assets from latest release" || exit 0
           git pull --rebase origin main
           git push origin main
