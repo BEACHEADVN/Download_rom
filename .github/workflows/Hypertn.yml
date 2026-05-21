@@ -1,0 +1,55 @@
+name: Get HyperTN Download Info
+on:
+  workflow_dispatch: # Cho phép bấm chạy thủ công từ giao diện Actions
+
+jobs:
+  fetch-info:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Fetch and Extract Info
+        id: scrape
+        run: |
+          set -e
+
+          # 1. Tải nội dung HTML của trang web với User-Agent giả lập trình duyệt
+          echo "Đang tải dữ liệu từ hypertn.io.vn..."
+          curl -s -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+               "https://www.hypertn.io.vn/download" > source.html
+
+          # 2. Bốc thông tin liên quan đến thiết bị (Ví dụ tìm từ khóa zip hoặc tên rom)
+          # Đoạn này sẽ tìm tất cả các link tải kết thúc bằng đuôi .zip
+          echo "=== KẾT QUẢ CÀO DỮ LIỆU ==="
+          
+          # Lọc ra các đường link chứa file zip (hoặc bạn có thể đổi từ 'zip' thành từ khóa khác)
+          LINKS=$(grep -oE 'href="[^"]+\.zip[^"]*"' source.html | cut -d'"' -f2 || true)
+
+          if [ -z "$LINKS" ]; then
+            echo "Cảnh báo: Không tìm thấy link trực tiếp đuôi .zip trong mã nguồn HTML."
+            echo "Hiển thị nhãn text hoặc tiêu đề liên quan:"
+            grep -iE "socrates|socr|rom|download" source.html | head -n 20 || true
+            
+            # Đặt giá trị mặc định nếu không cào được link trực tiếp
+            echo "url=NOT_FOUND" >> $GITHUB_OUTPUT
+            echo "filename=NOT_FOUND" >> $GITHUB_OUTPUT
+          else
+            # Lấy link đầu tiên tìm thấy
+            DOWNLOAD_URL=$(echo "$LINKS" | head -n 1)
+            # Tách lấy tên file từ link tải
+            FILE_NAME=$(basename "$DOWNLOAD_URL" | cut -d'?' -f1)
+
+            echo "Link download tìm thấy: $DOWNLOAD_URL"
+            echo "Tên file tương ứng: $FILE_NAME"
+
+            # Lưu vào bộ nhớ đầu ra của GitHub Actions
+            echo "url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+            echo "filename=$FILE_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: View Output Result
+        run: |
+          echo "=== THÔNG TIN ĐẦU RA ==="
+          echo "URL thu được: ${{ steps.scrape.outputs.url }}"
+          echo "FILE thu được: ${{ steps.scrape.outputs.filename }}"
